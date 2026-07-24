@@ -1,0 +1,14 @@
+services:
+  guru:
+    build: .
+    image: guru:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - guru-data:/app/data
+
+volumes:
+  guru-data:
