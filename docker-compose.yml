@@ -1,6 +1,7 @@
 services:
   guru:
-    image: ghcr.io/thesathwik/guru:latest
+    build: .
+    image: guru:latest
     restart: unless-stopped
     ports:
       - "8000:8000"

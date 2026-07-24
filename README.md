@@ -53,7 +53,20 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 
-## Running with Docker
+## Running with Docker (manual build on the VM)
+
+`docker-compose.yml` builds the image locally from the Dockerfile - no
+registry needed. This is the default (plain `docker compose` commands
+use this file), and is the current way materials get deployed while
+CI/CD is on hold (see below).
+
+```bash
+cd ~/guru
+git pull
+docker compose up -d --build   # builds + (re)starts the container
+```
+
+Or without compose:
 
 ```bash
 docker build -t guru .
@@ -65,7 +78,14 @@ docker run -p 8000:8000 --env-file .env -v guru-data:/app/data guru
 `.github/workflows/deploy.yml` builds a Docker image on every push to
 `main` (or a manual run via the Actions tab), pushes it to GitHub
 Container Registry (`ghcr.io`), then SSHes into your VM to pull the new
-image and restart the container with `docker compose`.
+image and restart the container with `docker compose -f docker-compose.ghcr.yml`.
+
+**Currently on hold**: the GitHub account tied to this repo has a
+billing lock that prevents any Actions job from starting at all
+(unrelated to this repo - it's public, so Actions minutes are free).
+Resolve it at https://github.com/settings/billing, then pushes to
+`main` will build + deploy automatically again. Until then, use the
+manual `docker compose up -d --build` flow above.
 
 ### One-time VM setup
 
@@ -106,14 +126,10 @@ provided automatically by Actions - no setup needed for that part.
 
 1. Push to `main` -> Actions builds the image and pushes
    `ghcr.io/<owner>/guru:latest` and `:<commit-sha>`.
-2. The workflow copies `docker-compose.yml` to `~/guru` on the VM, then
-   runs `docker compose pull && docker compose up -d` over SSH, so the
-   container restarts on the new image. The named volume `guru-data`
-   keeps SQLite/local files across deploys.
-3. First deploy: since this repo currently only has the
-   `claude/llm-tutor-material-org-4roxdt` branch, merge it into `main`
-   (or trigger the workflow manually from the Actions tab) to kick off
-   the first build.
+2. The workflow copies `docker-compose.ghcr.yml` to `~/guru` on the VM,
+   then runs `docker compose -f docker-compose.ghcr.yml pull && ... up -d`
+   over SSH, so the container restarts on the new image. The named
+   volume `guru-data` keeps SQLite/local files across deploys.
 
 ## Next steps (not in this pass)
 
