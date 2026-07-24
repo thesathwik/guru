@@ -11,3 +11,4 @@ services:
 
 volumes:
   guru-data:
+    name: guru-data
