@@ -1,0 +1,36 @@
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class SubjectCreate(BaseModel):
+    name: str
+
+
+class MaterialOut(BaseModel):
+    id: int
+    filename: str
+    status: str
+    error_message: str | None = None
+    chunk_count: int | None = None
+    char_count: int | None = None
+    uploaded_at: datetime
+    processed_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class SubjectOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    created_at: datetime
+    material_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SubjectDetailOut(SubjectOut):
+    materials: list[MaterialOut] = []
