@@ -97,6 +97,78 @@ button:hover { background: #4338ca; }
   margin-top: 0;
 }
 
+button:disabled {
+  background: #a5a5b5;
+  cursor: not-allowed;
+}
+
+.upload-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.upload-progress-item {
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.upload-progress-item .filename-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.upload-progress-item .filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-progress-item .pct {
+  color: #888;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.upload-progress-bar-track {
+  background: #eee;
+  border-radius: 999px;
+  height: 6px;
+  overflow: hidden;
+}
+
+.upload-progress-bar-fill {
+  background: #4f46e5;
+  height: 100%;
+  width: 0%;
+  transition: width 0.15s ease;
+}
+
+.upload-progress-item.done .upload-progress-bar-fill {
+  background: #16a34a;
+}
+
+.upload-progress-item.done .pct {
+  color: #16a34a;
+}
+
+.upload-progress-item.failed .upload-progress-bar-fill {
+  background: #dc2626;
+}
+
+.upload-progress-item.failed .pct {
+  color: #dc2626;
+}
+
+.upload-progress-item .error-msg {
+  color: #dc2626;
+  margin-top: 4px;
+}
+
 .materials-table {
   width: 100%;
   border-collapse: collapse;

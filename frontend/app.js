@@ -18,6 +18,34 @@ async function api(path, options) {
   return res.status === 204 ? null : res.json();
 }
 
+// fetch() can't report upload progress, so file uploads use XHR instead.
+function uploadFileWithProgress(path, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", API + path);
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+        return;
+      }
+      let message = `Request failed: ${xhr.status}`;
+      try {
+        message = JSON.parse(xhr.responseText).detail || message;
+      } catch (_) {
+        // ignore non-JSON error bodies
+      }
+      reject(new Error(message));
+    });
+    xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
+    const formData = new FormData();
+    formData.append("file", file);
+    xhr.send(formData);
+  });
+}
+
 async function loadSubjects() {
   const subjects = await api("/subjects");
   subjectListEl.innerHTML = "";
@@ -103,28 +131,63 @@ document.getElementById("upload-form").addEventListener("submit", async (e) => {
   const files = Array.from(fileInput.files);
   if (files.length === 0) return;
 
-  const results = await Promise.allSettled(
-    files.map((file) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      return api(`/subjects/${activeSubjectId}/materials`, {
-        method: "POST",
-        body: formData,
-      });
+  const submitBtn = e.target.querySelector("button[type=submit]");
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Uploading...";
+
+  const progressListEl = document.getElementById("upload-progress-list");
+  progressListEl.innerHTML = "";
+
+  const rows = files.map((file) => {
+    const row = document.createElement("div");
+    row.className = "upload-progress-item";
+    row.innerHTML = `
+      <div class="filename-row">
+        <span class="filename">${escapeHtml(file.name)}</span>
+        <span class="pct">0%</span>
+      </div>
+      <div class="upload-progress-bar-track">
+        <div class="upload-progress-bar-fill"></div>
+      </div>
+    `;
+    progressListEl.appendChild(row);
+    return row;
+  });
+
+  const uploads = files.map((file, i) => {
+    const row = rows[i];
+    const fill = row.querySelector(".upload-progress-bar-fill");
+    const pct = row.querySelector(".pct");
+
+    return uploadFileWithProgress(`/subjects/${activeSubjectId}/materials`, file, (percent) => {
+      fill.style.width = percent + "%";
+      pct.textContent = percent + "%";
     })
-  );
+      .then(() => {
+        row.classList.add("done");
+        fill.style.width = "100%";
+        pct.textContent = "Uploaded";
+        refreshSubjectDetail();
+        loadSubjects();
+      })
+      .catch((err) => {
+        row.classList.add("failed");
+        pct.textContent = "Failed";
+        row.insertAdjacentHTML("beforeend", `<div class="error-msg">${escapeHtml(err.message)}</div>`);
+      });
+  });
+
+  await Promise.allSettled(uploads);
 
   fileInput.value = "";
+  submitBtn.disabled = false;
+  submitBtn.textContent = "Upload material";
   await refreshSubjectDetail();
   await loadSubjects();
 
-  const failures = results.filter((r) => r.status === "rejected");
-  if (failures.length > 0) {
-    alert(
-      `${failures.length} of ${files.length} file(s) failed to upload:\n` +
-        failures.map((r) => r.reason.message).join("\n")
-    );
-  }
+  setTimeout(() => {
+    progressListEl.innerHTML = "";
+  }, 4000);
 });
 
 loadSubjects();
