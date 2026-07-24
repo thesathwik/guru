@@ -100,22 +100,30 @@ document.getElementById("upload-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (activeSubjectId === null) return;
   const fileInput = document.getElementById("upload-input");
-  const file = fileInput.files[0];
-  if (!file) return;
+  const files = Array.from(fileInput.files);
+  if (files.length === 0) return;
 
-  const formData = new FormData();
-  formData.append("file", file);
+  const results = await Promise.allSettled(
+    files.map((file) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      return api(`/subjects/${activeSubjectId}/materials`, {
+        method: "POST",
+        body: formData,
+      });
+    })
+  );
 
-  try {
-    await api(`/subjects/${activeSubjectId}/materials`, {
-      method: "POST",
-      body: formData,
-    });
-    fileInput.value = "";
-    await refreshSubjectDetail();
-    await loadSubjects();
-  } catch (err) {
-    alert(err.message);
+  fileInput.value = "";
+  await refreshSubjectDetail();
+  await loadSubjects();
+
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    alert(
+      `${failures.length} of ${files.length} file(s) failed to upload:\n` +
+        failures.map((r) => r.reason.message).join("\n")
+    );
   }
 });
 
