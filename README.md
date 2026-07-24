@@ -53,8 +53,70 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 
+## Running with Docker
+
+```bash
+docker build -t guru .
+docker run -p 8000:8000 --env-file .env -v guru-data:/app/data guru
+```
+
+## CI/CD: build + deploy to your VM
+
+`.github/workflows/deploy.yml` builds a Docker image on every push to
+`main` (or a manual run via the Actions tab), pushes it to GitHub
+Container Registry (`ghcr.io`), then SSHes into your VM to pull the new
+image and restart the container with `docker compose`.
+
+### One-time VM setup
+
+1. Install Docker + the Compose plugin on the VM.
+2. Create a deploy directory and your **real** `.env` there (this file
+   is never committed to git):
+   ```bash
+   mkdir -p ~/guru
+   cd ~/guru
+   nano .env   # AZURE_STORAGE_CONNECTION_STRING=..., etc. (see .env.example)
+   ```
+3. Open the app's port (default `8000`) in the VM's firewall / Azure
+   Network Security Group.
+4. Generate an SSH key pair for deployments (on your own machine, not
+   the VM) and add the **public** key to the VM's
+   `~/.ssh/authorized_keys` for the deploy user:
+   ```bash
+   ssh-keygen -t ed25519 -f guru_deploy_key -N ""
+   ssh-copy-id -i guru_deploy_key.pub <user>@<vm-host>
+   ```
+
+### GitHub repo secrets
+
+Add these under **Settings > Secrets and variables > Actions**:
+
+| Secret          | Value                                                                 |
+|------------------|------------------------------------------------------------------------|
+| `VM_HOST`        | VM's public IP or hostname                                            |
+| `VM_USER`        | SSH username on the VM                                                |
+| `VM_SSH_KEY`     | The **private** key generated above (`guru_deploy_key`, full contents) |
+| `VM_SSH_PORT`    | Optional, only if SSH isn't on port 22                                |
+| `GHCR_PAT`       | A GitHub Personal Access Token (classic) with `read:packages`, so the VM can `docker pull` the image. Alternatively, make the `guru` package public under the repo's **Packages** settings and drop the login step. |
+
+`GITHUB_TOKEN` (used to *push* the image during the build job) is
+provided automatically by Actions - no setup needed for that part.
+
+### How a deploy runs
+
+1. Push to `main` -> Actions builds the image and pushes
+   `ghcr.io/<owner>/guru:latest` and `:<commit-sha>`.
+2. The workflow copies `docker-compose.yml` to `~/guru` on the VM, then
+   runs `docker compose pull && docker compose up -d` over SSH, so the
+   container restarts on the new image. The named volume `guru-data`
+   keeps SQLite/local files across deploys.
+3. First deploy: since this repo currently only has the
+   `claude/llm-tutor-material-org-4roxdt` branch, merge it into `main`
+   (or trigger the workflow manually from the Actions tab) to kick off
+   the first build.
+
 ## Next steps (not in this pass)
 
 - Turn processed chunks into embeddings + a vector store for retrieval.
 - Wire up an actual LLM chat interface backed by that retrieval.
-- Deploy behind a proper web server / process manager on the VM.
+- HTTPS / a domain in front of the VM (e.g. Caddy or nginx as a reverse proxy).
