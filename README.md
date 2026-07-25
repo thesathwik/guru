@@ -131,6 +131,24 @@ provided automatically by Actions - no setup needed for that part.
    over SSH, so the container restarts on the new image. The named
    volume `guru-data` keeps SQLite/local files across deploys.
 
+## Recovering the database from storage
+
+The subjects/materials database (SQLite) is metadata only - the actual
+uploaded files live in your configured storage backend (Azure Blob, or
+local disk). If the database is ever lost or reset (e.g. a
+misconfigured `APP_DATA_DIR`, or a volume mixup) while the underlying
+files are still intact, rebuild it with:
+
+```bash
+docker exec <container-name> python -m app.recover_from_storage
+```
+
+This scans storage for `{subject}/raw/{filename}` files, recreates any
+missing Subject/Material rows (subject names are best-effort
+reconstructed from the folder slug), and reprocesses each recovered
+file. It's safe to run more than once - anything already in the
+database is left alone.
+
 ## Next steps (not in this pass)
 
 - Turn processed chunks into embeddings + a vector store for retrieval.

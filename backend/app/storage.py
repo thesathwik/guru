@@ -17,6 +17,9 @@ class StorageBackend(ABC):
     @abstractmethod
     def delete_prefix(self, prefix: str) -> None: ...
 
+    @abstractmethod
+    def list_all(self, prefix: str = "") -> list[str]: ...
+
 
 class LocalStorage(StorageBackend):
     """Stores files on local disk under a root directory. Used when no
@@ -44,6 +47,13 @@ class LocalStorage(StorageBackend):
         target = self.root / prefix
         if target.exists():
             shutil.rmtree(target)
+
+    def list_all(self, prefix: str = "") -> list[str]:
+        return sorted(
+            str(p.relative_to(self.root)).replace(os.sep, "/")
+            for p in self.root.rglob("*")
+            if p.is_file() and str(p.relative_to(self.root)).replace(os.sep, "/").startswith(prefix)
+        )
 
 
 class AzureBlobStorage(StorageBackend):
@@ -74,6 +84,9 @@ class AzureBlobStorage(StorageBackend):
     def delete_prefix(self, prefix: str) -> None:
         for blob in self.container.list_blobs(name_starts_with=prefix):
             self.container.delete_blob(blob.name)
+
+    def list_all(self, prefix: str = "") -> list[str]:
+        return [blob.name for blob in self.container.list_blobs(name_starts_with=prefix)]
 
 
 _storage_instance: StorageBackend | None = None

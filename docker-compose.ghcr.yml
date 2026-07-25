@@ -6,6 +6,11 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Force this regardless of .env - it must always match the volume
+      # mount below, or the database silently ends up in the container's
+      # throwaway layer instead of the persistent volume.
+      - APP_DATA_DIR=/app/data
     volumes:
       - guru-data:/app/data
 
