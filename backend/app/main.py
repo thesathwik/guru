@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from . import models, preprocessing, schemas
 from .database import Base, SessionLocal, engine, get_db
@@ -159,7 +160,10 @@ async def upload_material(
 
     data = await file.read()
     raw_path = f"{subject.slug}/raw/{file.filename}"
-    get_storage().save(raw_path, data)
+    # get_storage().save() is a blocking call (sync Azure SDK network I/O
+    # for the blob backend); run it off the event loop so one upload
+    # doesn't stall every other request being served concurrently.
+    await run_in_threadpool(get_storage().save, raw_path, data)
 
     material = models.Material(
         subject_id=subject.id,
