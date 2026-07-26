@@ -34,7 +34,15 @@ questions grounded only in that subject's material, via Azure OpenAI.
   beside it, falling back to the nearest body text). Captions are
   embedded, and at question time figures are ranked by how well their
   caption matches the question - a figure is shown because it depicts
-  what was asked about. An earlier version used page proximity (show
+  what was asked about. Ranking is *hybrid*: mostly IDF-weighted lexical
+  overlap, plus the caption embedding. The embedding model in use is a
+  paraphrase model (symmetric sentence similarity), and on short
+  captions its question-to-caption scores are near noise - asking about
+  the Tyndall effect ranked "Arm-wrestling" and "Meiosis" above the
+  figure captioned "Demonstration of Tyndall effect". Rare query terms
+  ("tyndall") are the reliable signal, so they dominate; the vector
+  score is kept for wording the caption doesn't share ("how plants make
+  food" -> "Photosynthesis"). An earlier version used page proximity (show
   everything sharing a page with a matching passage), which surfaced
   whatever else happened to be on that page: a blood-centrifugation
   diagram for a Tyndall-effect question. Figures with no caption text

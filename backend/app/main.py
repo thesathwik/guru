@@ -298,8 +298,9 @@ def list_figures(subject_id: int, q: str | None = None, db: Session = Depends(ge
             ],
         }
 
-    scored = tutor.score_images(db, subject_id, embeddings.embed_query(q))
-    shown = {image["id"] for image in tutor._relevant_images(db, subject_id, embeddings.embed_query(q))}
+    query_vector = embeddings.embed_query(q)
+    scored = tutor.score_images(db, subject_id, query_vector, q)
+    shown = {image["id"] for image in tutor._relevant_images(db, subject_id, query_vector, q)}
     return {
         "total": total,
         "with_caption": captioned,

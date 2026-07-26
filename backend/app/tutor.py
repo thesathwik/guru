@@ -67,7 +67,21 @@ IMAGE_KEEP_RATIO = float(os.environ.get("TUTOR_IMAGE_KEEP_RATIO", "0.85"))
 MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
 
 
-def score_images(db, subject_id: int, query_vector: list[float]) -> list[tuple[float, object]]:
+# Captions are short, and the embedding model in use is a *paraphrase*
+# model - built for sentence-vs-sentence similarity, not question ->
+# description retrieval. On short captions its cosine scores are close
+# to noise (asking about the Tyndall effect ranked "Arm-wrestling" and
+# "Meiosis" top). Distinctive words carry the signal instead: a caption
+# containing a rare query term like "tyndall" is almost certainly the
+# right figure, so lexical overlap is weighted above the vector score,
+# with the vector score kept to catch wording the question doesn't share
+# ("how plants make food" -> "Photosynthesis").
+LEXICAL_WEIGHT = float(os.environ.get("TUTOR_IMAGE_LEXICAL_WEIGHT", "0.7"))
+
+
+def score_images(
+    db, subject_id: int, query_vector: list[float], query: str = ""
+) -> list[tuple[float, object]]:
     """Scores every captioned figure in a subject against the question,
     best first. No filtering - `_relevant_images` decides what to keep,
     and the figures diagnostic endpoint shows the raw ranking."""
@@ -83,16 +97,23 @@ def score_images(db, subject_id: int, query_vector: list[float]) -> list[tuple[f
         )
         .all()
     )
+    if not rows:
+        return []
 
-    scored = [
-        (embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding)), row)
-        for row in rows
-    ]
+    idf = embeddings.build_idf([row.caption for row in rows])
+
+    scored = []
+    for row in rows:
+        semantic = embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding))
+        lexical = embeddings.lexical_overlap(query, row.caption, idf) if query else 0.0
+        combined = LEXICAL_WEIGHT * lexical + (1 - LEXICAL_WEIGHT) * semantic
+        scored.append((combined, row))
+
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return scored
 
 
-def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dict]:
+def _relevant_images(db, subject_id: int, query_vector: list[float], query: str = "") -> list[dict]:
     """Picks the figures whose captions genuinely match the question.
 
     An earlier version used page proximity - show every figure sharing a
@@ -110,7 +131,7 @@ def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dic
     """
     import statistics
 
-    scored = score_images(db, subject_id, query_vector)
+    scored = score_images(db, subject_id, query_vector, query)
     if not scored:
         return []
 
@@ -181,5 +202,5 @@ def answer_question(
             }
             for m in matches
         ],
-        "images": _relevant_images(db, subject.id, query_vector),
+        "images": _relevant_images(db, subject.id, query_vector, question),
     }

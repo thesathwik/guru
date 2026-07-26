@@ -6,6 +6,8 @@ tagging every embedded chunk with subject_id and always filtering
 retrieval to it - not from separate models or indexes.
 """
 import json
+import math
+import re
 from functools import lru_cache
 
 import numpy as np
@@ -32,6 +34,44 @@ def embed_query(text: str) -> list[float]:
     this particular model is symmetric (no query/passage prefix needed,
     unlike e.g. the E5 model family)."""
     return next(iter(_get_model().embed([text]))).tolist()
+
+
+_TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
+
+
+def tokenize(text: str) -> list[str]:
+    return _TOKEN_PATTERN.findall(text.lower())
+
+
+def build_idf(documents: list[str]) -> dict[str, float]:
+    """Inverse document frequency over a small corpus (a subject's
+    captions). Rare words like 'tyndall' end up weighted far above
+    common ones like 'effect', which is exactly the signal that
+    distinguishes the right figure."""
+    counts: dict[str, int] = {}
+    for document in documents:
+        for term in set(tokenize(document)):
+            counts[term] = counts.get(term, 0) + 1
+
+    total = max(len(documents), 1)
+    return {term: math.log(1 + total / count) for term, count in counts.items()}
+
+
+def lexical_overlap(query: str, text: str, idf: dict[str, float]) -> float:
+    """How much of the query's *distinctive* vocabulary appears in text,
+    scored 0-1.
+
+    Query terms absent from the whole corpus (typically 'what', 'is')
+    are ignored rather than counted as misses, so they neither inflate
+    nor deflate the result."""
+    query_terms = {term for term in tokenize(query) if term in idf}
+    if not query_terms:
+        return 0.0
+
+    text_terms = set(tokenize(text))
+    matched = sum(idf[term] for term in query_terms if term in text_terms)
+    total = sum(idf[term] for term in query_terms)
+    return matched / total if total else 0.0
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
