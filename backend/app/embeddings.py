@@ -44,10 +44,9 @@ def tokenize(text: str) -> list[str]:
 
 
 def build_idf(documents: list[str]) -> dict[str, float]:
-    """Inverse document frequency over a small corpus (a subject's
-    captions). Rare words like 'tyndall' end up weighted far above
-    common ones like 'effect', which is exactly the signal that
-    distinguishes the right figure."""
+    """Inverse document frequency over a corpus. Rare words like
+    'tyndall' end up weighted far above common ones like 'effect' or
+    'is', which is the signal that distinguishes the right figure."""
     counts: dict[str, int] = {}
     for document in documents:
         for term in set(tokenize(document)):
@@ -57,13 +56,44 @@ def build_idf(documents: list[str]) -> dict[str, float]:
     return {term: math.log(1 + total / count) for term, count in counts.items()}
 
 
+_subject_idf_cache: dict[int, tuple[int, dict[str, float]]] = {}
+
+
+def get_subject_idf(db, subject_id: int) -> dict[str, float]:
+    """IDF over a subject's chunk text, cached per subject and rebuilt
+    when its chunk count changes (i.e. material was added or
+    reprocessed)."""
+    from . import models
+
+    chunk_count = db.query(models.Chunk).filter_by(subject_id=subject_id).count()
+    cached = _subject_idf_cache.get(subject_id)
+    if cached and cached[0] == chunk_count:
+        return cached[1]
+
+    texts = [
+        row.text for row in db.query(models.Chunk).filter_by(subject_id=subject_id).all()
+    ]
+    idf = build_idf(texts)
+    _subject_idf_cache[subject_id] = (chunk_count, idf)
+    return idf
+
+
 def lexical_overlap(query: str, text: str, idf: dict[str, float]) -> float:
     """How much of the query's *distinctive* vocabulary appears in text,
     scored 0-1.
 
-    Query terms absent from the whole corpus (typically 'what', 'is')
-    are ignored rather than counted as misses, so they neither inflate
-    nor deflate the result."""
+    The IDF must come from the subject's full text, not from the
+    captions alone. Scoring against caption-derived IDF drops any query
+    term missing from every caption - so a question about the Tyndall
+    effect silently degrades to matching the word "effect", and returns
+    a confident-looking score for an unrelated figure. Weighted against
+    the subject's own vocabulary, a caption missing the rare term is
+    correctly penalised, and when no caption has it every figure scores
+    low and none is shown.
+
+    Terms unknown even to the subject's text (typos, or words it simply
+    never uses) are ignored - they cannot match anything.
+    """
     query_terms = {term for term in tokenize(query) if term in idf}
     if not query_terms:
         return 0.0

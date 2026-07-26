@@ -266,14 +266,22 @@ def search_subject(subject_id: int, q: str, top_k: int = 5, db: Session = Depend
 
 
 @app.get("/api/subjects/{subject_id}/figures")
-def list_figures(subject_id: int, q: str | None = None, db: Session = Depends(get_db)):
+def list_figures(
+    subject_id: int,
+    q: str | None = None,
+    contains: str | None = None,
+    file: str | None = None,
+    page: int | None = None,
+    db: Session = Depends(get_db),
+):
     """Diagnostic view of a subject's extracted figures.
 
     Without `q`: every figure and the caption found for it, so a missing
-    or wrong caption is visible directly. With `q`: the same figures
-    ranked by caption relevance with no cutoff applied, which shows
-    whether a figure was excluded because it scored poorly or because
-    the selection rule filtered it out."""
+    or wrong caption is visible directly - narrow with `contains` (a
+    caption substring), `file` and/or `page` to check one figure. With
+    `q`: the same figures ranked by relevance with no cutoff applied,
+    which shows whether a figure was excluded because it scored poorly
+    or because the selection rule filtered it out."""
     subject = db.get(models.Subject, subject_id)
     if subject is None:
         raise HTTPException(404, "Subject not found")
@@ -283,9 +291,19 @@ def list_figures(subject_id: int, q: str | None = None, db: Session = Depends(ge
     captioned = sum(1 for row in rows if row.caption)
 
     if not q:
+        selected = rows
+        if contains:
+            needle = contains.lower()
+            selected = [r for r in rows if r.caption and needle in r.caption.lower()]
+        if file:
+            selected = [r for r in selected if r.material.filename == file]
+        if page is not None:
+            selected = [r for r in selected if r.page == page]
+
         return {
             "total": total,
             "with_caption": captioned,
+            "matched": len(selected),
             "figures": [
                 {
                     "id": row.id,
@@ -294,7 +312,7 @@ def list_figures(subject_id: int, q: str | None = None, db: Session = Depends(ge
                     "page": row.page,
                     "caption": row.caption,
                 }
-                for row in sorted(rows, key=lambda r: (r.material_id, r.page))
+                for row in sorted(selected, key=lambda r: (r.material_id, r.page))
             ],
         }
 

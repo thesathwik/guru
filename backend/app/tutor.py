@@ -100,7 +100,7 @@ def score_images(
     if not rows:
         return []
 
-    idf = embeddings.build_idf([row.caption for row in rows])
+    idf = embeddings.get_subject_idf(db, subject_id)
 
     scored = []
     for row in rows:

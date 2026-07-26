@@ -35,7 +35,11 @@ questions grounded only in that subject's material, via Azure OpenAI.
   embedded, and at question time figures are ranked by how well their
   caption matches the question - a figure is shown because it depicts
   what was asked about. Ranking is *hybrid*: mostly IDF-weighted lexical
-  overlap, plus the caption embedding. The embedding model in use is a
+  overlap (weights taken from the subject's own chunk text, not from the
+  captions - scoring against caption-derived IDF drops any query term no
+  caption contains, so "what is the tyndall effect" degrades to matching
+  the word "effect" and confidently returns an unrelated figure), plus
+  the caption embedding. The embedding model in use is a
   paraphrase model (symmetric sentence similarity), and on short
   captions its question-to-caption scores are near noise - asking about
   the Tyndall effect ranked "Arm-wrestling" and "Meiosis" above the
@@ -122,10 +126,11 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `GET /api/images/{id}` - serves an extracted figure's bytes
 - `GET /api/subjects/{id}/figures` - diagnostic: every extracted figure
   and the caption found for it (so a missing/wrong caption is visible).
-  Add `?q=...` to see them ranked by relevance to a question with no
-  cutoff applied, and whether each would be shown - use this to tell a
-  caption-extraction problem apart from a selection-threshold one, and
-  to tune the figure settings against real scores.
+  Narrow with `contains=` (caption substring), `file=` and/or `page=` to
+  check one specific figure. Add `?q=...` to see them ranked by relevance
+  with no cutoff applied, and whether each would be shown - use this to
+  tell a caption-extraction problem apart from a selection one, and to
+  tune the figure settings against real scores.
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 
