@@ -55,7 +55,14 @@ def _looks_like_caption(text: str) -> bool:
     return bool(_CAPTION_PATTERN.match(text))
 
 
-def _find_caption(page, rect, max_gap: float = 90.0, max_length: int = 400) -> str | None:
+def _find_caption(
+    page,
+    rect,
+    max_gap: float = 90.0,
+    max_length: int = 400,
+    overlap_tolerance: float = 25.0,
+    line_gap: float = 22.0,
+) -> str | None:
     """Finds the text describing an image on the page.
 
     Prefers a real caption ("Fig. 5.24: Demonstration of the Tyndall
@@ -63,8 +70,7 @@ def _find_caption(page, rect, max_gap: float = 90.0, max_length: int = 400) -> s
     what the figure depicts. Falls back to the nearest body text, which
     is weaker but still far more specific than "somewhere on this page".
     """
-    candidates = []
-
+    blocks = []
     for block in page.get_text("blocks"):
         if len(block) > 6 and block[6] != 0:
             continue  # not a text block
@@ -77,26 +83,47 @@ def _find_caption(page, rect, max_gap: float = 90.0, max_length: int = 400) -> s
         # column's text in a two-column layout.
         if min(x1, rect.x1) - max(x0, rect.x0) <= 0:
             continue
+        blocks.append((y0, y1, text))
 
-        gap_below = y0 - rect.y1
-        gap_above = rect.y0 - y1
-        if 0 <= gap_below <= max_gap:
-            distance, position = gap_below, 0
-        elif 0 <= gap_above <= max_gap:
-            distance, position = gap_above, 1
-        else:
-            continue
+    # An image's rect often extends past the visible artwork, so the
+    # caption's first line can start slightly *inside* it. Requiring the
+    # text to sit strictly below the rect drops that line and picks up
+    # only the continuation - which is how "Fig. 5.24: Demonstration of
+    # Tyndall effect in / a sports stadium" was captured as just
+    # "a sports stadium", losing the words that identify it.
+    below = sorted(
+        [b for b in blocks if b[0] >= rect.y1 - overlap_tolerance and b[0] - rect.y1 <= max_gap],
+        key=lambda b: b[0],
+    )
+    above = sorted(
+        [b for b in blocks if b[1] <= rect.y0 + overlap_tolerance and rect.y0 - b[1] <= max_gap],
+        key=lambda b: -b[1],
+    )
 
-        # Caption-looking text wins regardless of which side it's on or
-        # how close a plain paragraph happens to be.
-        rank = 0 if _looks_like_caption(text) else 1
-        candidates.append((rank, position, distance, text))
+    if below:
+        # Captions frequently wrap across several lines, and PyMuPDF
+        # returns each as its own block, so join consecutive ones.
+        start = next(
+            (i for i, (_, _, text) in enumerate(below) if _looks_like_caption(text)), 0
+        )
+        parts = [below[start][2]]
+        previous_bottom = below[start][1]
+        for top, bottom, text in below[start + 1 :]:
+            if top - previous_bottom > line_gap:
+                break
+            if sum(len(part) for part in parts) + len(text) > max_length:
+                break
+            parts.append(text)
+            previous_bottom = bottom
+        return " ".join(parts)[:max_length]
 
-    if not candidates:
-        return None
+    if above:
+        captionish = next(
+            (text for _, _, text in above if _looks_like_caption(text)), above[0][2]
+        )
+        return captionish[:max_length]
 
-    candidates.sort(key=lambda c: (c[0], c[1], c[2]))
-    return candidates[0][3][:max_length]
+    return None
 
 
 def extract_images(

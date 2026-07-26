@@ -31,7 +31,13 @@ questions grounded only in that subject's material, via Azure OpenAI.
   Each chunk records the source page it starts on.
 - **Figures/diagrams** are pulled out of PDFs during processing, along
   with each figure's **caption** (the "Fig. 5.24: ..." text sitting
-  beside it, falling back to the nearest body text). Captions are
+  beside it, falling back to the nearest body text). Captions wrapping
+  over several lines are joined, and text starting slightly inside the
+  image's rect counts as below it - image rects often extend past the
+  visible artwork, and requiring text to sit strictly below captured
+  only a caption's *second* line ("a sports stadium" instead of
+  "Fig. 5.24: Demonstration of Tyndall effect in a sports stadium"),
+  losing the words that identify the figure. Captions are
   embedded, and at question time figures are ranked by how well their
   caption matches the question - a figure is shown because it depicts
   what was asked about. Ranking is *hybrid*: mostly IDF-weighted lexical
