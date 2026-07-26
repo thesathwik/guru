@@ -86,7 +86,12 @@ def answer_question(
     return {
         "answer": response.choices[0].message.content,
         "sources": [
-            {"filename": m["filename"], "chunk_index": m["chunk_index"], "score": m["score"]}
+            {
+                "filename": m["filename"],
+                "chunk_index": m["chunk_index"],
+                "score": m["score"],
+                "text": m["text"],
+            }
             for m in matches
         ],
     }

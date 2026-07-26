@@ -266,9 +266,41 @@ button:disabled {
 
 .chat-sources {
   align-self: flex-start;
-  font-size: 12px;
-  color: #999;
+  max-width: 80%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   margin-top: -6px;
+}
+
+.chat-source-item {
+  font-size: 12px;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.chat-source-item summary {
+  padding: 5px 10px;
+  color: #666;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chat-source-item summary:hover {
+  color: #4f46e5;
+}
+
+.chat-source-item[open] summary {
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.chat-source-text {
+  padding: 8px 10px;
+  color: #444;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 #chat-form {

@@ -50,6 +50,7 @@ class ChatSource(BaseModel):
     filename: str
     chunk_index: int
     score: float
+    text: str
 
 
 class ChatResponse(BaseModel):

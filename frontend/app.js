@@ -225,8 +225,21 @@ function appendChatBubble(role, content, sources) {
   if (sources && sources.length > 0) {
     const sourcesEl = document.createElement("div");
     sourcesEl.className = "chat-sources";
-    const names = [...new Set(sources.map((s) => s.filename))];
-    sourcesEl.textContent = "Sources: " + names.join(", ");
+    for (const s of sources) {
+      const details = document.createElement("details");
+      details.className = "chat-source-item";
+
+      const summary = document.createElement("summary");
+      summary.textContent = `${s.filename} · ${Math.round(s.score * 100)}% match`;
+      details.appendChild(summary);
+
+      const textEl = document.createElement("div");
+      textEl.className = "chat-source-text";
+      textEl.textContent = s.text;
+      details.appendChild(textEl);
+
+      sourcesEl.appendChild(details);
+    }
     chatMessagesEl.appendChild(sourcesEl);
   }
 
