@@ -76,9 +76,14 @@ questions grounded only in that subject's material, via Azure OpenAI.
   shared table and index - isolation comes from always filtering
   search by `subject_id`, not from separate per-subject models or
   vector stores. `GET /api/subjects/{id}/search?q=...` does a
-  brute-force cosine-similarity search scoped to that subject (fine at
-  this scale - a personal library of at most a few thousand chunks per
-  subject).
+  brute-force search scoped to that subject (fine at this scale - a
+  personal library of at most a few thousand chunks per subject).
+  Scoring blends IDF-weighted term overlap with the vector score, for
+  the same reason as figures: the embedding is a paraphrase model, and
+  alone it returns loosely-related passages (pollination and
+  potential-energy text for a question about neither). Term overlap
+  pins results to the question's distinctive words; the vector score
+  still carries wording the passage phrases differently.
 
 ## Running locally / on the VM
 

@@ -7,12 +7,19 @@ retrieval to it - not from separate models or indexes.
 """
 import json
 import math
+import os
 import re
 from functools import lru_cache
 
 import numpy as np
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+# Share of a chunk's score coming from IDF-weighted term overlap rather
+# than the embedding. Lower than the figure weighting: chunks are long
+# enough for the vector score to carry real signal, whereas captions are
+# short enough that it is mostly noise.
+CHUNK_LEXICAL_WEIGHT = float(os.environ.get("TUTOR_CHUNK_LEXICAL_WEIGHT", "0.45"))
 
 
 @lru_cache(maxsize=1)
@@ -120,9 +127,17 @@ def search_chunks(
     top_k: int = 5,
     query_vector: list[float] | None = None,
 ) -> list[dict]:
-    """Brute-force cosine similarity search over a single subject's
-    chunks. Fine at this scale (a personal library of a few thousand
-    chunks per subject at most) - no vector index needed.
+    """Brute-force search over a single subject's chunks. Fine at this
+    scale (a personal library of a few thousand chunks per subject at
+    most) - no vector index needed.
+
+    Scoring is hybrid. The embedding model is a paraphrase model, built
+    for sentence-vs-sentence similarity rather than question-to-passage
+    retrieval, and on its own it returns loosely-related passages -
+    pollination and potential-energy text for a question about neither.
+    Blending in IDF-weighted term overlap pins results to the question's
+    distinctive vocabulary, while the vector score still carries wording
+    the passage phrases differently.
 
     `query_vector` lets a caller that already embedded the query reuse
     it instead of paying for a second embedding pass."""
@@ -134,12 +149,15 @@ def search_chunks(
 
     query_vec = np.array(query_vector if query_vector is not None else embed_query(query))
     query_norm = np.linalg.norm(query_vec)
+    idf = get_subject_idf(db, subject_id) if query else {}
 
     scored = []
     for row in rows:
         chunk_vec = np.array(json.loads(row.embedding))
         denom = query_norm * np.linalg.norm(chunk_vec)
-        score = float(np.dot(query_vec, chunk_vec) / denom) if denom else 0.0
+        semantic = float(np.dot(query_vec, chunk_vec) / denom) if denom else 0.0
+        lexical = lexical_overlap(query, row.text, idf) if idf else 0.0
+        score = CHUNK_LEXICAL_WEIGHT * lexical + (1 - CHUNK_LEXICAL_WEIGHT) * semantic
         scored.append((score, row))
 
     scored.sort(key=lambda pair: pair[0], reverse=True)

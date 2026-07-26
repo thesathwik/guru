@@ -59,9 +59,10 @@ def _find_caption(
     page,
     rect,
     max_gap: float = 90.0,
-    max_length: int = 400,
+    max_length: int = 250,
     overlap_tolerance: float = 25.0,
-    line_gap: float = 22.0,
+    line_gap: float = 14.0,
+    continuation_max_length: int = 90,
 ) -> str | None:
     """Finds the text describing an image on the page.
 
@@ -102,7 +103,10 @@ def _find_caption(
 
     if below:
         # Captions frequently wrap across several lines, and PyMuPDF
-        # returns each as its own block, so join consecutive ones.
+        # returns each as its own block, so join consecutive ones - but
+        # only genuine continuation lines. Joining anything nearby sweeps
+        # in the body paragraph that follows the caption, producing a
+        # caption long and generic enough to match almost any question.
         start = next(
             (i for i, (_, _, text) in enumerate(below) if _looks_like_caption(text)), 0
         )
@@ -110,7 +114,9 @@ def _find_caption(
         previous_bottom = below[start][1]
         for top, bottom, text in below[start + 1 :]:
             if top - previous_bottom > line_gap:
-                break
+                break  # a new paragraph/section, not a wrapped line
+            if len(text) > continuation_max_length:
+                break  # a full paragraph, not the rest of a caption
             if sum(len(part) for part in parts) + len(text) > max_length:
                 break
             parts.append(text)
