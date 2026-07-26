@@ -29,12 +29,16 @@ questions grounded only in that subject's material, via Azure OpenAI.
   then sentences - including the Devanagari `।` terminator, then
   clauses, then words) rather than blind fixed-size character cuts.
   Each chunk records the source page it starts on.
-- **Figures/diagrams** are pulled out of PDFs during processing and
-  stored per page. When a retrieved chunk scores above
-  `TUTOR_MIN_IMAGE_SCORE`, figures from that same page are attached to
-  the answer. This is *page proximity*, not image-level semantic
-  search: an image is shown because the passage that answered the
-  question came off the same page. Textbook PDFs are mostly non-content
+- **Figures/diagrams** are pulled out of PDFs during processing, along
+  with each figure's **caption** (the "Fig. 5.24: ..." text sitting
+  beside it, falling back to the nearest body text). Captions are
+  embedded, and at question time figures are ranked by how well their
+  caption matches the question - a figure is shown because it depicts
+  what was asked about. An earlier version used page proximity (show
+  everything sharing a page with a matching passage), which surfaced
+  whatever else happened to be on that page: a blood-centrifugation
+  diagram for a Tyndall-effect question. Figures with no caption text
+  found near them are never surfaced. Textbook PDFs are mostly non-content
   imagery (page-background textures, running headers, rule lines), so
   `preprocessing.extract_images` filters on size, aspect ratio,
   bytes-per-pixel (flat backgrounds compress to almost nothing), and

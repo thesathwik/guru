@@ -43,17 +43,26 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return float(np.dot(a_arr, b_arr) / denom)
 
 
-def search_chunks(db, subject_id: int, query: str, top_k: int = 5) -> list[dict]:
+def search_chunks(
+    db,
+    subject_id: int,
+    query: str,
+    top_k: int = 5,
+    query_vector: list[float] | None = None,
+) -> list[dict]:
     """Brute-force cosine similarity search over a single subject's
     chunks. Fine at this scale (a personal library of a few thousand
-    chunks per subject at most) - no vector index needed."""
+    chunks per subject at most) - no vector index needed.
+
+    `query_vector` lets a caller that already embedded the query reuse
+    it instead of paying for a second embedding pass."""
     from . import models
 
     rows = db.query(models.Chunk).filter_by(subject_id=subject_id).all()
     if not rows:
         return []
 
-    query_vec = np.array(embed_query(query))
+    query_vec = np.array(query_vector if query_vector is not None else embed_query(query))
     query_norm = np.linalg.norm(query_vec)
 
     scored = []

@@ -55,60 +55,68 @@ def _build_context(matches: list[dict]) -> str:
     return "\n\n---\n\n".join(f"[From {m['filename']}]\n{m['text']}" for m in matches)
 
 
-# Only pages behind a *confidently* matching chunk contribute figures, so
-# a vague question doesn't pull in unrelated diagrams. Tunable without a
-# code change if it turns out too strict/loose on real material.
+# How well a figure's caption must match the question before it is shown.
+# Tunable without a code change if it turns out too strict/loose on real
+# material.
 MIN_IMAGE_SCORE = float(os.environ.get("TUTOR_MIN_IMAGE_SCORE", "0.35"))
 MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
 
 
-def _relevant_images(db, matches: list[dict]) -> list[dict]:
-    """Finds figures sitting on the same pages as the best-matching text.
+def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dict]:
+    """Ranks a subject's figures by how well their captions match the
+    question.
 
-    This is page proximity, not true image-level semantic matching: an
-    image is considered relevant because the passage that answered the
-    question came off the same page."""
+    An earlier version used page proximity - show every figure sharing a
+    page with a matching passage - which surfaced whatever else happened
+    to be on that page (e.g. a blood-centrifugation diagram for a
+    question about the Tyndall effect). Textbook captions state what a
+    figure depicts, so scoring against the caption picks the figure that
+    actually answers the question. Figures with no caption text found
+    near them are never surfaced.
+    """
+    import json
+
     from . import models
 
-    strong = [
-        m for m in matches if m.get("page") is not None and m["score"] >= MIN_IMAGE_SCORE
-    ]
-    if not strong:
-        return []
-
-    images: list[dict] = []
-    seen: set[int] = set()
-
-    for match in strong:  # already ordered best-first
-        rows = (
-            db.query(models.MaterialImage)
-            .filter_by(material_id=match["material_id"], page=match["page"])
-            .all()
+    rows = (
+        db.query(models.MaterialImage)
+        .filter(
+            models.MaterialImage.subject_id == subject_id,
+            models.MaterialImage.caption_embedding.isnot(None),
         )
-        for row in rows:
-            if row.id in seen:
-                continue
-            seen.add(row.id)
-            images.append(
-                {
-                    "id": row.id,
-                    "url": f"/api/images/{row.id}",
-                    "filename": match["filename"],
-                    "page": row.page,
-                    "width": row.width,
-                    "height": row.height,
-                }
-            )
-            if len(images) >= MAX_IMAGES:
-                return images
+        .all()
+    )
 
-    return images
+    scored = []
+    for row in rows:
+        score = embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding))
+        if score >= MIN_IMAGE_SCORE:
+            scored.append((score, row))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+
+    return [
+        {
+            "id": row.id,
+            "url": f"/api/images/{row.id}",
+            "filename": row.material.filename,
+            "page": row.page,
+            "width": row.width,
+            "height": row.height,
+            "caption": row.caption,
+            "score": score,
+        }
+        for score, row in scored[:MAX_IMAGES]
+    ]
 
 
 def answer_question(
     db, subject, question: str, history: list[dict] | None = None, top_k: int = 5
 ) -> dict:
-    matches = embeddings.search_chunks(db, subject.id, question, top_k=top_k)
+    query_vector = embeddings.embed_query(question)
+    matches = embeddings.search_chunks(
+        db, subject.id, question, top_k=top_k, query_vector=query_vector
+    )
 
     messages = [
         {
@@ -145,5 +153,5 @@ def answer_question(
             }
             for m in matches
         ],
-        "images": _relevant_images(db, matches),
+        "images": _relevant_images(db, subject.id, query_vector),
     }

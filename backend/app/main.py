@@ -40,9 +40,20 @@ def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
     if not material.filename.lower().endswith(".pdf"):
         return
 
-    for image in preprocessing.extract_images(raw_bytes):
+    images = preprocessing.extract_images(raw_bytes)
+    if not images:
+        return
+
+    # Embed captions in one batch so figures can be ranked by what they
+    # actually depict, not merely by which page they sit on.
+    captions = [image["caption"] for image in images]
+    caption_vectors = embeddings.embed_texts([c for c in captions if c])
+    vector_iter = iter(caption_vectors)
+
+    for image in images:
         path = f"{subject.slug}/images/{material.id}/{image['digest'][:16]}.{image['ext']}"
         storage.save(path, image["data"])
+        caption_embedding = json.dumps(next(vector_iter)) if image["caption"] else None
         db.add(
             models.MaterialImage(
                 subject_id=subject.id,
@@ -52,6 +63,8 @@ def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
                 content_type=f"image/{'jpeg' if image['ext'] in ('jpg', 'jpeg') else image['ext']}",
                 width=image["width"],
                 height=image["height"],
+                caption=image["caption"],
+                caption_embedding=caption_embedding,
             )
         )
 

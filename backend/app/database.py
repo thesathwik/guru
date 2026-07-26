@@ -26,6 +26,7 @@ def get_db():
 # table that's missing the new column.
 _ADDED_COLUMNS = {
     "chunks": {"page": "INTEGER"},
+    "material_images": {"caption": "TEXT", "caption_embedding": "TEXT"},
 }
 
 

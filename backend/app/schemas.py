@@ -61,6 +61,8 @@ class ChatImage(BaseModel):
     page: int
     width: int | None = None
     height: int | None = None
+    caption: str | None = None
+    score: float | None = None
 
 
 class ChatResponse(BaseModel):

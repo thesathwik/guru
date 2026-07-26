@@ -42,6 +42,62 @@ def _extract_docx(data: bytes) -> str:
 # which PDFs use heavily but no browser supports) gets converted to PNG.
 _WEB_SAFE_IMAGE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
 
+# Textbook figures are nearly always labelled, and the label says what the
+# figure actually shows - far more usefully than the surrounding body text.
+_CAPTION_PATTERN = re.compile(
+    r"^\s*(fig|figure|table|diagram|chart|graph|map|plate|activity"
+    r"|चित्र|तालिका|आकृति|मानचित्र)\b[\s.:\-–]*\d",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_caption(text: str) -> bool:
+    return bool(_CAPTION_PATTERN.match(text))
+
+
+def _find_caption(page, rect, max_gap: float = 90.0, max_length: int = 400) -> str | None:
+    """Finds the text describing an image on the page.
+
+    Prefers a real caption ("Fig. 5.24: Demonstration of the Tyndall
+    effect...") sitting just below or above the image, since that states
+    what the figure depicts. Falls back to the nearest body text, which
+    is weaker but still far more specific than "somewhere on this page".
+    """
+    candidates = []
+
+    for block in page.get_text("blocks"):
+        if len(block) > 6 and block[6] != 0:
+            continue  # not a text block
+        x0, y0, x1, y1, raw = block[0], block[1], block[2], block[3], block[4]
+        text = " ".join(raw.split())
+        if not text:
+            continue
+
+        # Require horizontal overlap so we don't grab the neighbouring
+        # column's text in a two-column layout.
+        if min(x1, rect.x1) - max(x0, rect.x0) <= 0:
+            continue
+
+        gap_below = y0 - rect.y1
+        gap_above = rect.y0 - y1
+        if 0 <= gap_below <= max_gap:
+            distance, position = gap_below, 0
+        elif 0 <= gap_above <= max_gap:
+            distance, position = gap_above, 1
+        else:
+            continue
+
+        # Caption-looking text wins regardless of which side it's on or
+        # how close a plain paragraph happens to be.
+        rank = 0 if _looks_like_caption(text) else 1
+        candidates.append((rank, position, distance, text))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+    return candidates[0][3][:max_length]
+
 
 def extract_images(
     data: bytes,
@@ -72,6 +128,7 @@ def extract_images(
 
     occurrences: dict[str, list[int]] = {}
     payloads: dict[str, dict] = {}
+    captions: dict[tuple[str, int], str] = {}
 
     with fitz.open(stream=data, filetype="pdf") as doc:
         for page_number, page in enumerate(doc, start=1):
@@ -92,6 +149,17 @@ def extract_images(
                         "width": base["width"],
                         "height": base["height"],
                     }
+
+                if (digest, page_number) not in captions:
+                    try:
+                        rects = page.get_image_rects(xref)
+                    except Exception:  # noqa: BLE001
+                        rects = []
+                    for rect in rects:
+                        caption = _find_caption(page, rect)
+                        if caption:
+                            captions[(digest, page_number)] = caption
+                            break
 
         results = []
         for digest, pages in occurrences.items():
@@ -126,6 +194,7 @@ def extract_images(
                         "width": width,
                         "height": height,
                         "digest": digest,
+                        "caption": captions.get((digest, page_number)),
                     }
                 )
 

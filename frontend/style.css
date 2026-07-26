@@ -344,9 +344,20 @@ button:disabled {
 
 .chat-figure figcaption {
   font-size: 11px;
-  color: #999;
-  margin-top: 4px;
-  text-align: center;
+  margin-top: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.figure-caption-text {
+  color: #444;
+  line-height: 1.35;
+}
+
+.figure-origin {
+  color: #aaa;
+  font-size: 10px;
 }
 
 .lightbox {

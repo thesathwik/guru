@@ -237,7 +237,16 @@ function appendChatBubble(role, content, sources, images) {
       figure.appendChild(el);
 
       const caption = document.createElement("figcaption");
-      caption.textContent = `${img.filename} · page ${img.page}`;
+      if (img.caption) {
+        const label = document.createElement("span");
+        label.className = "figure-caption-text";
+        label.textContent = img.caption;
+        caption.appendChild(label);
+      }
+      const origin = document.createElement("span");
+      origin.className = "figure-origin";
+      origin.textContent = `${img.filename} · page ${img.page}`;
+      caption.appendChild(origin);
       figure.appendChild(caption);
 
       figuresEl.appendChild(figure);

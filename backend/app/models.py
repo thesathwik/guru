@@ -72,5 +72,10 @@ class MaterialImage(Base):
     content_type = Column(String, nullable=False)
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
+    # The figure's caption (or nearest describing text). Embedding this
+    # is what lets retrieval pick the *right* figure on a page rather
+    # than every figure that happens to share the page.
+    caption = Column(Text, nullable=True)
+    caption_embedding = Column(Text, nullable=True)  # JSON-encoded list[float]
 
     material = relationship("Material", back_populates="images")
