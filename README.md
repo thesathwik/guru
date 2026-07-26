@@ -1,9 +1,10 @@
-# Guru - LLM Tutor (Step 1: Subject & Material Organization)
+# Guru - LLM Tutor
 
 Lets a user create subjects (each becomes a folder), upload learning
 materials into a subject, and automatically preprocesses each upload
-(text extraction + cleaning + chunking) so the text is ready to be fed
-to an LLM in a later step.
+(text extraction + cleaning + chunking + embedding) so it's searchable.
+Each subject has its own tutor: `POST /api/subjects/{id}/chat` answers
+questions grounded only in that subject's material, via Azure OpenAI.
 
 ## How it works
 
@@ -61,6 +62,13 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `AZURE_STORAGE_CONTAINER` - blob container name (default `materials`).
 - `APP_DATA_DIR` - where SQLite (and local-mode files) are stored
   (default `./data`).
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`,
+  `AZURE_OPENAI_API_VERSION` - powers the actual tutor chat. Create a
+  resource + a model deployment in the Azure Portal / Azure AI Foundry
+  first - `AZURE_OPENAI_DEPLOYMENT` is the *deployment name* you chose
+  there, not the underlying model's name. Without these set, the chat
+  endpoint returns a 503; everything else in the app works fine without
+  them.
 
 ## API
 
@@ -69,8 +77,13 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `GET /api/subjects/{id}` - subject detail with materials + status
 - `POST /api/subjects/{id}/materials` - multipart upload (`file` field)
 - `GET /api/subjects/{id}/search?q=...&top_k=5` - similarity search over
-  that subject's chunks (for testing retrieval; not yet wired to a chat
-  interface)
+  that subject's chunks (for testing retrieval quality directly)
+- `POST /api/subjects/{id}/chat` `{ "message": "...", "history": [...] }`
+  - retrieves relevant chunks for the subject and asks the configured
+  Azure OpenAI deployment to answer grounded in them. `history` is a
+  list of `{role, content}` turns from earlier in the conversation
+  (kept client-side only for now, not persisted server-side). Returns
+  `{ "answer": "...", "sources": [{filename, chunk_index, score}] }`.
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 
@@ -194,7 +207,6 @@ outbound access to Hugging Face. If a build ever fails at the
 
 ## Next steps (not in this pass)
 
-- Wire up an actual LLM chat interface backed by the search endpoint
-  above (e.g. Claude via the Anthropic API), so a subject's tutor
-  answers using retrieved chunks as context.
+- Persist chat history server-side (currently client-side only, per
+  subject, lost on page reload).
 - HTTPS / a domain in front of the VM (e.g. Caddy or nginx as a reverse proxy).

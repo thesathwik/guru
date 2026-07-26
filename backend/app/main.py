@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import embeddings, models, preprocessing, schemas
+from . import embeddings, models, preprocessing, schemas, tutor
 from .database import Base, SessionLocal, engine, get_db
 from .storage import get_storage
 from .utils import slugify
@@ -221,6 +221,23 @@ def search_subject(subject_id: int, q: str, top_k: int = 5, db: Session = Depend
     if not q.strip():
         raise HTTPException(400, "Query 'q' is required")
     return embeddings.search_chunks(db, subject_id, q, top_k=top_k)
+
+
+@app.post("/api/subjects/{subject_id}/chat", response_model=schemas.ChatResponse)
+def chat_with_subject(
+    subject_id: int, payload: schemas.ChatRequest, db: Session = Depends(get_db)
+):
+    subject = db.get(models.Subject, subject_id)
+    if subject is None:
+        raise HTTPException(404, "Subject not found")
+    if not payload.message.strip():
+        raise HTTPException(400, "Message is required")
+
+    history = [turn.model_dump() for turn in payload.history]
+    try:
+        return tutor.answer_question(db, subject, payload.message, history)
+    except tutor.TutorNotConfigured as exc:
+        raise HTTPException(503, str(exc))
 
 
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")

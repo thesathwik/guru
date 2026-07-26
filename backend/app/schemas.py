@@ -34,3 +34,24 @@ class SubjectOut(BaseModel):
 
 class SubjectDetailOut(SubjectOut):
     materials: list[MaterialOut] = []
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+
+
+class ChatSource(BaseModel):
+    filename: str
+    chunk_index: int
+    score: float
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    sources: list[ChatSource]

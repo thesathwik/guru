@@ -8,6 +8,11 @@ const emptyStateEl = document.getElementById("empty-state");
 const subjectViewEl = document.getElementById("subject-view");
 const subjectTitleEl = document.getElementById("subject-title");
 const materialsBodyEl = document.getElementById("materials-body");
+const chatMessagesEl = document.getElementById("chat-messages");
+
+// Chat history lives client-side only, per subject, for this session -
+// not persisted server-side yet.
+const chatHistoryBySubject = {};
 
 async function api(path, options) {
   const res = await fetch(API + path, options);
@@ -66,6 +71,7 @@ async function selectSubject(id) {
   await loadSubjects();
   await refreshSubjectDetail();
   restartPolling();
+  renderChatHistory();
 }
 
 async function refreshSubjectDetail() {
@@ -188,6 +194,80 @@ document.getElementById("upload-form").addEventListener("submit", async (e) => {
   setTimeout(() => {
     progressListEl.innerHTML = "";
   }, 4000);
+});
+
+function renderChatHistory() {
+  const history = chatHistoryBySubject[activeSubjectId] || [];
+  chatMessagesEl.innerHTML = "";
+
+  if (history.length === 0) {
+    chatMessagesEl.innerHTML =
+      '<div class="chat-empty">Ask a question about this subject\'s material to get started.</div>';
+    return;
+  }
+
+  for (const turn of history) {
+    appendChatBubble(turn.role, turn.content, turn.sources);
+  }
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function appendChatBubble(role, content, sources) {
+  if (chatMessagesEl.querySelector(".chat-empty")) {
+    chatMessagesEl.innerHTML = "";
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = `chat-bubble ${role}`;
+  bubble.textContent = content;
+  chatMessagesEl.appendChild(bubble);
+
+  if (sources && sources.length > 0) {
+    const sourcesEl = document.createElement("div");
+    sourcesEl.className = "chat-sources";
+    const names = [...new Set(sources.map((s) => s.filename))];
+    sourcesEl.textContent = "Sources: " + names.join(", ");
+    chatMessagesEl.appendChild(sourcesEl);
+  }
+
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  return bubble;
+}
+
+document.getElementById("chat-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (activeSubjectId === null) return;
+
+  const input = document.getElementById("chat-input");
+  const message = input.value.trim();
+  if (!message) return;
+
+  const subjectId = activeSubjectId;
+  const history = (chatHistoryBySubject[subjectId] ||= []);
+
+  history.push({ role: "user", content: message });
+  appendChatBubble("user", message);
+  input.value = "";
+
+  const pendingBubble = appendChatBubble("assistant pending", "Thinking...");
+
+  try {
+    const response = await api(`/subjects/${subjectId}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        history: history.slice(0, -1).map((h) => ({ role: h.role, content: h.content })),
+      }),
+    });
+
+    pendingBubble.remove();
+    history.push({ role: "assistant", content: response.answer, sources: response.sources });
+    appendChatBubble("assistant", response.answer, response.sources);
+  } catch (err) {
+    pendingBubble.remove();
+    appendChatBubble("assistant error", err.message);
+  }
 });
 
 loadSubjects();

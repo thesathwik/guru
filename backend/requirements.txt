@@ -9,3 +9,4 @@ azure-storage-blob==12.22.0
 python-dotenv==1.0.1
 fastembed==0.8.0
 numpy==2.4.6
+openai==2.48.0
