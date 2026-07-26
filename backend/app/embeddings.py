@@ -71,6 +71,7 @@ def search_chunks(db, subject_id: int, query: str, top_k: int = 5) -> list[dict]
             "filename": row.material.filename,
             "chunk_index": row.chunk_index,
             "text": row.text,
+            "page": row.page,
             "score": score,
         }
         for score, row in scored[:top_k]

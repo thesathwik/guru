@@ -14,11 +14,12 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from . import embeddings, models, preprocessing, schemas, tutor
-from .database import Base, SessionLocal, engine, get_db
+from .database import Base, SessionLocal, apply_migrations, engine, get_db
 from .storage import get_storage
 from .utils import slugify
 
 Base.metadata.create_all(bind=engine)
+apply_migrations()
 
 app = FastAPI(title="Guru - LLM Tutor")
 
@@ -28,6 +29,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
+    """Extracts figures/diagrams from a PDF and records which page each
+    came from, so retrieval can surface them alongside text from the
+    same page. Non-PDFs simply have no images."""
+    db.query(models.MaterialImage).filter_by(material_id=material.id).delete()
+
+    if not material.filename.lower().endswith(".pdf"):
+        return
+
+    for image in preprocessing.extract_images(raw_bytes):
+        path = f"{subject.slug}/images/{material.id}/{image['digest'][:16]}.{image['ext']}"
+        storage.save(path, image["data"])
+        db.add(
+            models.MaterialImage(
+                subject_id=subject.id,
+                material_id=material.id,
+                page=image["page"],
+                path=path,
+                content_type=f"image/{'jpeg' if image['ext'] in ('jpg', 'jpeg') else image['ext']}",
+                width=image["width"],
+                height=image["height"],
+            )
+        )
 
 
 def process_material(material_id: int) -> None:
@@ -47,33 +73,36 @@ def process_material(material_id: int) -> None:
 
         try:
             raw_bytes = storage.read(material.raw_path)
-            text = preprocessing.extract_text(material.filename, raw_bytes)
-            text = preprocessing.clean_text(text)
-            chunks = preprocessing.chunk_text(text)
+            pages = preprocessing.extract_pages(material.filename, raw_bytes)
+            text, chunks = preprocessing.chunk_pages(pages)
+            chunk_texts = [chunk["text"] for chunk in chunks]
 
             processed_path = f"{subject.slug}/processed/{material.filename}.json"
             payload = {
                 "filename": material.filename,
                 "subject": subject.name,
                 "text": text,
-                "chunks": chunks,
+                "chunks": chunk_texts,
             }
             storage.save(processed_path, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
             # Replace this material's chunks/embeddings (idempotent - safe
             # to reprocess the same material more than once).
             db.query(models.Chunk).filter_by(material_id=material.id).delete()
-            vectors = embeddings.embed_texts(chunks)
-            for index, (chunk_text_value, vector) in enumerate(zip(chunks, vectors)):
+            vectors = embeddings.embed_texts(chunk_texts)
+            for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
                 db.add(
                     models.Chunk(
                         subject_id=subject.id,
                         material_id=material.id,
                         chunk_index=index,
-                        text=chunk_text_value,
+                        text=chunk["text"],
                         embedding=json.dumps(vector),
+                        page=chunk["page"],
                     )
                 )
+
+            _store_images(db, storage, subject, material, raw_bytes)
 
             material.processed_path = processed_path
             material.chunk_count = len(chunks)
@@ -221,6 +250,20 @@ def search_subject(subject_id: int, q: str, top_k: int = 5, db: Session = Depend
     if not q.strip():
         raise HTTPException(400, "Query 'q' is required")
     return embeddings.search_chunks(db, subject_id, q, top_k=top_k)
+
+
+@app.get("/api/images/{image_id}")
+def get_image(image_id: int, db: Session = Depends(get_db)):
+    from fastapi.responses import Response
+
+    image = db.get(models.MaterialImage, image_id)
+    if image is None:
+        raise HTTPException(404, "Image not found")
+    return Response(
+        content=get_storage().read(image.path),
+        media_type=image.content_type,
+        headers={"Cache-Control": "public, max-age=31536000"},
+    )
 
 
 @app.post("/api/subjects/{subject_id}/chat", response_model=schemas.ChatResponse)

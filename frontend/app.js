@@ -207,12 +207,12 @@ function renderChatHistory() {
   }
 
   for (const turn of history) {
-    appendChatBubble(turn.role, turn.content, turn.sources);
+    appendChatBubble(turn.role, turn.content, turn.sources, turn.images);
   }
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
-function appendChatBubble(role, content, sources) {
+function appendChatBubble(role, content, sources, images) {
   if (chatMessagesEl.querySelector(".chat-empty")) {
     chatMessagesEl.innerHTML = "";
   }
@@ -222,6 +222,29 @@ function appendChatBubble(role, content, sources) {
   bubble.textContent = content;
   chatMessagesEl.appendChild(bubble);
 
+  if (images && images.length > 0) {
+    const figuresEl = document.createElement("div");
+    figuresEl.className = "chat-figures";
+    for (const img of images) {
+      const figure = document.createElement("figure");
+      figure.className = "chat-figure";
+
+      const el = document.createElement("img");
+      el.src = img.url;
+      el.alt = `Figure from ${img.filename}, page ${img.page}`;
+      el.loading = "lazy";
+      el.addEventListener("click", () => openLightbox(img));
+      figure.appendChild(el);
+
+      const caption = document.createElement("figcaption");
+      caption.textContent = `${img.filename} · page ${img.page}`;
+      figure.appendChild(caption);
+
+      figuresEl.appendChild(figure);
+    }
+    chatMessagesEl.appendChild(figuresEl);
+  }
+
   if (sources && sources.length > 0) {
     const sourcesEl = document.createElement("div");
     sourcesEl.className = "chat-sources";
@@ -230,7 +253,8 @@ function appendChatBubble(role, content, sources) {
       details.className = "chat-source-item";
 
       const summary = document.createElement("summary");
-      summary.textContent = `${s.filename} · ${Math.round(s.score * 100)}% match`;
+      const where = s.page ? `${s.filename} · p.${s.page}` : s.filename;
+      summary.textContent = `${where} · ${Math.round(s.score * 100)}% match`;
       details.appendChild(summary);
 
       const textEl = document.createElement("div");
@@ -245,6 +269,26 @@ function appendChatBubble(role, content, sources) {
 
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
   return bubble;
+}
+
+function openLightbox(img) {
+  const overlay = document.createElement("div");
+  overlay.className = "lightbox";
+  overlay.innerHTML = `
+    <img src="${img.url}" alt="Figure from ${escapeHtml(img.filename)}, page ${img.page}" />
+    <div class="lightbox-caption">${escapeHtml(img.filename)} &middot; page ${img.page}</div>
+  `;
+  overlay.addEventListener("click", () => overlay.remove());
+  document.addEventListener(
+    "keydown",
+    function onKey(e) {
+      if (e.key === "Escape") {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+      }
+    }
+  );
+  document.body.appendChild(overlay);
 }
 
 document.getElementById("chat-form").addEventListener("submit", async (e) => {
@@ -275,8 +319,13 @@ document.getElementById("chat-form").addEventListener("submit", async (e) => {
     });
 
     pendingBubble.remove();
-    history.push({ role: "assistant", content: response.answer, sources: response.sources });
-    appendChatBubble("assistant", response.answer, response.sources);
+    history.push({
+      role: "assistant",
+      content: response.answer,
+      sources: response.sources,
+      images: response.images,
+    });
+    appendChatBubble("assistant", response.answer, response.sources, response.images);
   } catch (err) {
     pendingBubble.remove();
     appendChatBubble("assistant error", err.message);

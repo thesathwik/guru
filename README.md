@@ -28,6 +28,21 @@ questions grounded only in that subject's material, via Azure OpenAI.
 - **Chunking** splits on natural boundaries (paragraphs, then lines,
   then sentences - including the Devanagari `।` terminator, then
   clauses, then words) rather than blind fixed-size character cuts.
+  Each chunk records the source page it starts on.
+- **Figures/diagrams** are pulled out of PDFs during processing and
+  stored per page. When a retrieved chunk scores above
+  `TUTOR_MIN_IMAGE_SCORE`, figures from that same page are attached to
+  the answer. This is *page proximity*, not image-level semantic
+  search: an image is shown because the passage that answered the
+  question came off the same page. Textbook PDFs are mostly non-content
+  imagery (page-background textures, running headers, rule lines), so
+  `preprocessing.extract_images` filters on size, aspect ratio,
+  bytes-per-pixel (flat backgrounds compress to almost nothing), and
+  how many pages a given image repeats across - keyed on content hash,
+  since the same background is often a separate PDF object per page.
+  On a real NCERT textbook this cut 126 raw images to 16 real figures.
+  JPEG 2000 images (common in PDFs, unsupported by browsers) are
+  converted to PNG.
 - **Embeddings**: each chunk is embedded (via a single local
   multilingual model, `fastembed` - no external API, no per-call cost)
   and stored in a `chunks` table tagged with `subject_id`. Every
@@ -88,6 +103,7 @@ Copy `.env.example` to `.env` in the repo root and fill in:
   list of `{role, content}` turns from earlier in the conversation
   (kept client-side only for now, not persisted server-side). Returns
   `{ "answer": "...", "sources": [{filename, chunk_index, score}] }`.
+- `GET /api/images/{id}` - serves an extracted figure's bytes
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 

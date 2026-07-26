@@ -51,8 +51,19 @@ class ChatSource(BaseModel):
     chunk_index: int
     score: float
     text: str
+    page: int | None = None
+
+
+class ChatImage(BaseModel):
+    id: int
+    url: str
+    filename: str
+    page: int
+    width: int | None = None
+    height: int | None = None
 
 
 class ChatResponse(BaseModel):
     answer: str
     sources: list[ChatSource]
+    images: list[ChatImage] = []

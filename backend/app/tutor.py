@@ -55,6 +55,56 @@ def _build_context(matches: list[dict]) -> str:
     return "\n\n---\n\n".join(f"[From {m['filename']}]\n{m['text']}" for m in matches)
 
 
+# Only pages behind a *confidently* matching chunk contribute figures, so
+# a vague question doesn't pull in unrelated diagrams. Tunable without a
+# code change if it turns out too strict/loose on real material.
+MIN_IMAGE_SCORE = float(os.environ.get("TUTOR_MIN_IMAGE_SCORE", "0.35"))
+MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
+
+
+def _relevant_images(db, matches: list[dict]) -> list[dict]:
+    """Finds figures sitting on the same pages as the best-matching text.
+
+    This is page proximity, not true image-level semantic matching: an
+    image is considered relevant because the passage that answered the
+    question came off the same page."""
+    from . import models
+
+    strong = [
+        m for m in matches if m.get("page") is not None and m["score"] >= MIN_IMAGE_SCORE
+    ]
+    if not strong:
+        return []
+
+    images: list[dict] = []
+    seen: set[int] = set()
+
+    for match in strong:  # already ordered best-first
+        rows = (
+            db.query(models.MaterialImage)
+            .filter_by(material_id=match["material_id"], page=match["page"])
+            .all()
+        )
+        for row in rows:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            images.append(
+                {
+                    "id": row.id,
+                    "url": f"/api/images/{row.id}",
+                    "filename": match["filename"],
+                    "page": row.page,
+                    "width": row.width,
+                    "height": row.height,
+                }
+            )
+            if len(images) >= MAX_IMAGES:
+                return images
+
+    return images
+
+
 def answer_question(
     db, subject, question: str, history: list[dict] | None = None, top_k: int = 5
 ) -> dict:
@@ -91,7 +141,9 @@ def answer_question(
                 "chunk_index": m["chunk_index"],
                 "score": m["score"],
                 "text": m["text"],
+                "page": m.get("page"),
             }
             for m in matches
         ],
+        "images": _relevant_images(db, matches),
     }

@@ -18,3 +18,35 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# Columns added to tables that already exist in deployed databases.
+# Base.metadata.create_all() creates missing *tables* but never alters an
+# existing one, so without this an older database keeps running against a
+# table that's missing the new column.
+_ADDED_COLUMNS = {
+    "chunks": {"page": "INTEGER"},
+}
+
+
+def apply_migrations() -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as connection:
+        existing_tables = {
+            row[0]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            )
+        }
+        for table, columns in _ADDED_COLUMNS.items():
+            if table not in existing_tables:
+                continue  # create_all() will build it with every column
+            present = {
+                row[1] for row in connection.execute(text(f"PRAGMA table_info({table})"))
+            }
+            for column, column_type in columns.items():
+                if column not in present:
+                    connection.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                    )

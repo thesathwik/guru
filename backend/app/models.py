@@ -36,6 +36,9 @@ class Material(Base):
 
     subject = relationship("Subject", back_populates="materials")
     chunks = relationship("Chunk", back_populates="material", cascade="all, delete-orphan")
+    images = relationship(
+        "MaterialImage", back_populates="material", cascade="all, delete-orphan"
+    )
 
 
 class Chunk(Base):
@@ -51,5 +54,23 @@ class Chunk(Base):
     chunk_index = Column(Integer, nullable=False)
     text = Column(Text, nullable=False)
     embedding = Column(Text, nullable=False)  # JSON-encoded list[float]
+    # Source page (1-based) this chunk's text starts on, used to pull in
+    # figures/diagrams from the same page when the chunk is retrieved.
+    page = Column(Integer, nullable=True)
 
     material = relationship("Material", back_populates="chunks")
+
+
+class MaterialImage(Base):
+    __tablename__ = "material_images"
+
+    id = Column(Integer, primary_key=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    page = Column(Integer, nullable=False)
+    path = Column(String, nullable=False)
+    content_type = Column(String, nullable=False)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+
+    material = relationship("Material", back_populates="images")
