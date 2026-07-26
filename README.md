@@ -19,6 +19,11 @@ to an LLM in a later step.
   - If `AZURE_STORAGE_CONNECTION_STRING` is set, files go to Azure Blob
     Storage.
   - Otherwise, files are stored on local disk under `data/materials/`.
+- **PDF text extraction** uses PyMuPDF (`fitz`), which correctly
+  handles complex/reordering scripts (e.g. Devanagari/Hindi) - verified
+  against a real NCERT Hindi textbook PDF. An earlier version used
+  `pypdf`, which reliably corrupts Devanagari text (misplaced/duplicated
+  matras); don't switch back to it for PDF extraction.
 
 ## Running locally / on the VM
 
@@ -148,6 +153,19 @@ missing Subject/Material rows (subject names are best-effort
 reconstructed from the folder slug), and reprocesses each recovered
 file. It's safe to run more than once - anything already in the
 database is left alone.
+
+## Reprocessing existing materials
+
+After a preprocessing change (e.g. the pypdf -> PyMuPDF switch for
+better Hindi/Devanagari support), already-uploaded files won't benefit
+until they're reprocessed. Rather than deleting and re-uploading them:
+
+```bash
+docker exec <container-name> python -m app.reprocess_all
+```
+
+This re-runs extraction/cleaning/chunking for every material currently
+in the database and overwrites their processed output in place.
 
 ## Next steps (not in this pass)
 

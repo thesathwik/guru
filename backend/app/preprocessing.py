@@ -18,10 +18,11 @@ def extract_text(filename: str, data: bytes) -> str:
 
 
 def _extract_pdf(data: bytes) -> str:
-    from pypdf import PdfReader
+    import fitz  # PyMuPDF - notably better than pypdf at correctly ordering
+    # glyphs for complex/reordering scripts (e.g. Devanagari matras)
 
-    reader = PdfReader(BytesIO(data))
-    return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        return "\n\n".join(page.get_text() for page in doc)
 
 
 def _extract_docx(data: bytes) -> str:
