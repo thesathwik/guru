@@ -62,13 +62,17 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `AZURE_STORAGE_CONTAINER` - blob container name (default `materials`).
 - `APP_DATA_DIR` - where SQLite (and local-mode files) are stored
   (default `./data`).
-- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`,
-  `AZURE_OPENAI_API_VERSION` - powers the actual tutor chat. Create a
-  resource + a model deployment in the Azure Portal / Azure AI Foundry
-  first - `AZURE_OPENAI_DEPLOYMENT` is the *deployment name* you chose
-  there, not the underlying model's name. Without these set, the chat
-  endpoint returns a 503; everything else in the app works fine without
-  them.
+- `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` -
+  powers the actual tutor chat via Azure AI Foundry's unified,
+  OpenAI-compatible `v1` endpoint (works with any chat model in its
+  catalog, not just OpenAI's - e.g. Kimi K2). Create a resource + a
+  model deployment in Azure AI Foundry first. `AZURE_OPENAI_ENDPOINT`
+  is the deployment's endpoint URL *without* the trailing
+  `/chat/completions` (e.g.
+  `https://<resource>.services.ai.azure.com/openai/v1`);
+  `AZURE_OPENAI_DEPLOYMENT` is the deployment's name, not the
+  underlying model's name. Without these set, the chat endpoint returns
+  a 503; everything else in the app works fine without them.
 
 ## API
 

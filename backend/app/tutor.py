@@ -37,13 +37,15 @@ def _get_client():
             "AZURE_OPENAI_API_KEY, and AZURE_OPENAI_DEPLOYMENT in .env"
         )
 
-    from openai import AzureOpenAI
+    # Azure AI Foundry's unified "v1" endpoint (https://<resource>.services
+    # .ai.azure.com/openai/v1) is OpenAI-API-compatible, including for
+    # non-OpenAI models in its catalog (e.g. Kimi K2) - so this uses the
+    # plain OpenAI client with a custom base_url, not the AzureOpenAI
+    # client (which targets the older *.openai.azure.com resource shape
+    # and builds a different URL path).
+    from openai import OpenAI
 
-    _client = AzureOpenAI(
-        azure_endpoint=endpoint,
-        api_key=api_key,
-        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
-    )
+    _client = OpenAI(base_url=endpoint, api_key=api_key)
     return _client
 
 
