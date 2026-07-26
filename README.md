@@ -38,7 +38,11 @@ questions grounded only in that subject's material, via Azure OpenAI.
   everything sharing a page with a matching passage), which surfaced
   whatever else happened to be on that page: a blood-centrifugation
   diagram for a Tyndall-effect question. Figures with no caption text
-  found near them are never surfaced. Textbook PDFs are mostly non-content
+  found near them are never surfaced. Selection is *relative* - a figure
+  must beat the subject's median caption score by a margin, not hit a
+  fixed threshold - because absolute cosine values differ by embedding
+  model, so a hard cutoff has to be re-guessed whenever the model
+  changes. Textbook PDFs are mostly non-content
   imagery (page-background textures, running headers, rule lines), so
   `preprocessing.extract_images` filters on size, aspect ratio,
   bytes-per-pixel (flat backgrounds compress to almost nothing), and
@@ -108,6 +112,12 @@ Copy `.env.example` to `.env` in the repo root and fill in:
   (kept client-side only for now, not persisted server-side). Returns
   `{ "answer": "...", "sources": [{filename, chunk_index, score}] }`.
 - `GET /api/images/{id}` - serves an extracted figure's bytes
+- `GET /api/subjects/{id}/figures` - diagnostic: every extracted figure
+  and the caption found for it (so a missing/wrong caption is visible).
+  Add `?q=...` to see them ranked by relevance to a question with no
+  cutoff applied, and whether each would be shown - use this to tell a
+  caption-extraction problem apart from a selection-threshold one, and
+  to tune the figure settings against real scores.
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 

@@ -265,6 +265,60 @@ def search_subject(subject_id: int, q: str, top_k: int = 5, db: Session = Depend
     return embeddings.search_chunks(db, subject_id, q, top_k=top_k)
 
 
+@app.get("/api/subjects/{subject_id}/figures")
+def list_figures(subject_id: int, q: str | None = None, db: Session = Depends(get_db)):
+    """Diagnostic view of a subject's extracted figures.
+
+    Without `q`: every figure and the caption found for it, so a missing
+    or wrong caption is visible directly. With `q`: the same figures
+    ranked by caption relevance with no cutoff applied, which shows
+    whether a figure was excluded because it scored poorly or because
+    the selection rule filtered it out."""
+    subject = db.get(models.Subject, subject_id)
+    if subject is None:
+        raise HTTPException(404, "Subject not found")
+
+    rows = db.query(models.MaterialImage).filter_by(subject_id=subject_id).all()
+    total = len(rows)
+    captioned = sum(1 for row in rows if row.caption)
+
+    if not q:
+        return {
+            "total": total,
+            "with_caption": captioned,
+            "figures": [
+                {
+                    "id": row.id,
+                    "url": f"/api/images/{row.id}",
+                    "filename": row.material.filename,
+                    "page": row.page,
+                    "caption": row.caption,
+                }
+                for row in sorted(rows, key=lambda r: (r.material_id, r.page))
+            ],
+        }
+
+    scored = tutor.score_images(db, subject_id, embeddings.embed_query(q))
+    shown = {image["id"] for image in tutor._relevant_images(db, subject_id, embeddings.embed_query(q))}
+    return {
+        "total": total,
+        "with_caption": captioned,
+        "query": q,
+        "ranked": [
+            {
+                "id": row.id,
+                "url": f"/api/images/{row.id}",
+                "filename": row.material.filename,
+                "page": row.page,
+                "caption": row.caption,
+                "score": round(score, 4),
+                "shown": row.id in shown,
+            }
+            for score, row in scored[:15]
+        ],
+    }
+
+
 @app.get("/api/images/{image_id}")
 def get_image(image_id: int, db: Session = Depends(get_db)):
     from fastapi.responses import Response

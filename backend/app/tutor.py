@@ -55,25 +55,22 @@ def _build_context(matches: list[dict]) -> str:
     return "\n\n---\n\n".join(f"[From {m['filename']}]\n{m['text']}" for m in matches)
 
 
-# How well a figure's caption must match the question before it is shown.
-# Tunable without a code change if it turns out too strict/loose on real
-# material.
-MIN_IMAGE_SCORE = float(os.environ.get("TUTOR_MIN_IMAGE_SCORE", "0.35"))
+# A relevant figure has to clear a low absolute floor *and* stand out
+# from the subject's own baseline (see _relevant_images). The margin is
+# what actually does the work: absolute cosine values vary a lot by
+# embedding model, so a hard threshold has to be re-guessed whenever the
+# model changes, while "clearly better than this subject's typical
+# caption" holds regardless of the scale the model happens to produce.
+MIN_IMAGE_SCORE = float(os.environ.get("TUTOR_MIN_IMAGE_SCORE", "0.20"))
+IMAGE_STANDOUT_MARGIN = float(os.environ.get("TUTOR_IMAGE_MARGIN", "0.08"))
+IMAGE_KEEP_RATIO = float(os.environ.get("TUTOR_IMAGE_KEEP_RATIO", "0.85"))
 MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
 
 
-def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dict]:
-    """Ranks a subject's figures by how well their captions match the
-    question.
-
-    An earlier version used page proximity - show every figure sharing a
-    page with a matching passage - which surfaced whatever else happened
-    to be on that page (e.g. a blood-centrifugation diagram for a
-    question about the Tyndall effect). Textbook captions state what a
-    figure depicts, so scoring against the caption picks the figure that
-    actually answers the question. Figures with no caption text found
-    near them are never surfaced.
-    """
+def score_images(db, subject_id: int, query_vector: list[float]) -> list[tuple[float, object]]:
+    """Scores every captioned figure in a subject against the question,
+    best first. No filtering - `_relevant_images` decides what to keep,
+    and the figures diagnostic endpoint shows the raw ranking."""
     import json
 
     from . import models
@@ -87,13 +84,43 @@ def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dic
         .all()
     )
 
-    scored = []
-    for row in rows:
-        score = embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding))
-        if score >= MIN_IMAGE_SCORE:
-            scored.append((score, row))
-
+    scored = [
+        (embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding)), row)
+        for row in rows
+    ]
     scored.sort(key=lambda pair: pair[0], reverse=True)
+    return scored
+
+
+def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dict]:
+    """Picks the figures whose captions genuinely match the question.
+
+    An earlier version used page proximity - show every figure sharing a
+    page with a matching passage - which surfaced whatever else happened
+    to be on that page (e.g. a blood-centrifugation diagram for a
+    question about the Tyndall effect). Textbook captions state what a
+    figure depicts, so scoring against the caption picks the figure that
+    actually answers the question.
+
+    Selection is relative rather than a fixed cutoff: the best figure
+    must beat the subject's median caption score by a margin. On a
+    question a figure really illustrates, one caption stands out sharply
+    from the rest; on a question with no matching figure, every caption
+    scores about the same and nothing is shown.
+    """
+    import statistics
+
+    scored = score_images(db, subject_id, query_vector)
+    if not scored:
+        return []
+
+    best = scored[0][0]
+    median = statistics.median([score for score, _ in scored])
+
+    if best < MIN_IMAGE_SCORE or best - median < IMAGE_STANDOUT_MARGIN:
+        return []
+
+    cutoff = max(best * IMAGE_KEEP_RATIO, median + IMAGE_STANDOUT_MARGIN)
 
     return [
         {
@@ -107,6 +134,7 @@ def _relevant_images(db, subject_id: int, query_vector: list[float]) -> list[dic
             "score": score,
         }
         for score, row in scored[:MAX_IMAGES]
+        if score >= cutoff
     ]
 
 
