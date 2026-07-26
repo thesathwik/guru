@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import models, preprocessing, schemas
+from . import embeddings, models, preprocessing, schemas
 from .database import Base, SessionLocal, engine, get_db
 from .storage import get_storage
 from .utils import slugify
@@ -59,6 +59,21 @@ def process_material(material_id: int) -> None:
                 "chunks": chunks,
             }
             storage.save(processed_path, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+            # Replace this material's chunks/embeddings (idempotent - safe
+            # to reprocess the same material more than once).
+            db.query(models.Chunk).filter_by(material_id=material.id).delete()
+            vectors = embeddings.embed_texts(chunks)
+            for index, (chunk_text_value, vector) in enumerate(zip(chunks, vectors)):
+                db.add(
+                    models.Chunk(
+                        subject_id=subject.id,
+                        material_id=material.id,
+                        chunk_index=index,
+                        text=chunk_text_value,
+                        embedding=json.dumps(vector),
+                    )
+                )
 
             material.processed_path = processed_path
             material.chunk_count = len(chunks)
@@ -196,6 +211,16 @@ def delete_material(material_id: int, db: Session = Depends(get_db)):
     db.delete(material)
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/subjects/{subject_id}/search")
+def search_subject(subject_id: int, q: str, top_k: int = 5, db: Session = Depends(get_db)):
+    subject = db.get(models.Subject, subject_id)
+    if subject is None:
+        raise HTTPException(404, "Subject not found")
+    if not q.strip():
+        raise HTTPException(400, "Query 'q' is required")
+    return embeddings.search_chunks(db, subject_id, q, top_k=top_k)
 
 
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")

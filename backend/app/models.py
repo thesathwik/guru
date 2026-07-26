@@ -35,3 +35,21 @@ class Material(Base):
     processed_at = Column(DateTime, nullable=True)
 
     subject = relationship("Subject", back_populates="materials")
+    chunks = relationship("Chunk", back_populates="material", cascade="all, delete-orphan")
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id = Column(Integer, primary_key=True)
+    # Denormalized from material.subject_id so retrieval can filter by
+    # subject directly, without joining through materials - this is what
+    # keeps every subject's tutor scoped to only its own material in a
+    # single shared embeddings table.
+    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+    embedding = Column(Text, nullable=False)  # JSON-encoded list[float]
+
+    material = relationship("Material", back_populates="chunks")

@@ -24,6 +24,19 @@ to an LLM in a later step.
   against a real NCERT Hindi textbook PDF. An earlier version used
   `pypdf`, which reliably corrupts Devanagari text (misplaced/duplicated
   matras); don't switch back to it for PDF extraction.
+- **Chunking** splits on natural boundaries (paragraphs, then lines,
+  then sentences - including the Devanagari `।` terminator, then
+  clauses, then words) rather than blind fixed-size character cuts.
+- **Embeddings**: each chunk is embedded (via a single local
+  multilingual model, `fastembed` - no external API, no per-call cost)
+  and stored in a `chunks` table tagged with `subject_id`. Every
+  subject effectively gets its own tutor/retrieval scope from one
+  shared table and index - isolation comes from always filtering
+  search by `subject_id`, not from separate per-subject models or
+  vector stores. `GET /api/subjects/{id}/search?q=...` does a
+  brute-force cosine-similarity search scoped to that subject (fine at
+  this scale - a personal library of at most a few thousand chunks per
+  subject).
 
 ## Running locally / on the VM
 
@@ -55,6 +68,9 @@ Copy `.env.example` to `.env` in the repo root and fill in:
 - `GET /api/subjects` - list subjects with material counts
 - `GET /api/subjects/{id}` - subject detail with materials + status
 - `POST /api/subjects/{id}/materials` - multipart upload (`file` field)
+- `GET /api/subjects/{id}/search?q=...&top_k=5` - similarity search over
+  that subject's chunks (for testing retrieval; not yet wired to a chat
+  interface)
 - `DELETE /api/materials/{id}` - remove a material
 - `DELETE /api/subjects/{id}` - remove a subject and its files
 
@@ -164,11 +180,21 @@ until they're reprocessed. Rather than deleting and re-uploading them:
 docker exec <container-name> python -m app.reprocess_all
 ```
 
-This re-runs extraction/cleaning/chunking for every material currently
-in the database and overwrites their processed output in place.
+This re-runs extraction/cleaning/chunking/embedding for every material
+currently in the database and overwrites their processed output and
+chunks in place.
+
+## Note: Docker build needs internet access to Hugging Face
+
+The embedding model (~220MB) is downloaded once during `docker build`
+(not at container runtime) so the running container never needs
+outbound access to Hugging Face. If a build ever fails at the
+`fastembed` model-download step, that's a build-time network issue
+(e.g. building somewhere without internet access), not a runtime bug.
 
 ## Next steps (not in this pass)
 
-- Turn processed chunks into embeddings + a vector store for retrieval.
-- Wire up an actual LLM chat interface backed by that retrieval.
+- Wire up an actual LLM chat interface backed by the search endpoint
+  above (e.g. Claude via the Anthropic API), so a subject's tutor
+  answers using retrieved chunks as context.
 - HTTPS / a domain in front of the VM (e.g. Caddy or nginx as a reverse proxy).
