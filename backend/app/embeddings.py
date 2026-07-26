@@ -70,19 +70,6 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN_PATTERN.findall(text.lower())
 
 
-def build_idf(documents: list[str]) -> dict[str, float]:
-    """Inverse document frequency over a corpus. Rare words like
-    'tyndall' end up weighted far above common ones like 'effect' or
-    'is', which is the signal that distinguishes the right figure."""
-    counts: dict[str, int] = {}
-    for document in documents:
-        for term in set(tokenize(document)):
-            counts[term] = counts.get(term, 0) + 1
-
-    total = max(len(documents), 1)
-    return {term: math.log(1 + total / count) for term, count in counts.items()}
-
-
 def build_bm25_idf(documents: list[str]) -> dict[str, float]:
     """BM25's smoothed IDF. It falls off far more sharply than the plain
     form for terms appearing in most documents, so boilerplate present
@@ -184,36 +171,11 @@ def get_subject_stats(db, subject_id: int):
 
 
 def get_subject_idf(db, subject_id: int) -> dict[str, float]:
-    """Plain IDF over a subject's chunk text (used for figure captions,
-    which are scored by term overlap rather than BM25)."""
+    """Term weights over a subject's chunk text. Figure captions borrow
+    these rather than deriving their own: the caption corpus is far too
+    small to tell a rare word from a common one."""
     idf, _average_length, _documents = get_subject_stats(db, subject_id)
     return idf
-
-
-def lexical_overlap(query: str, text: str, idf: dict[str, float]) -> float:
-    """How much of the query's *distinctive* vocabulary appears in text,
-    scored 0-1.
-
-    The IDF must come from the subject's full text, not from the
-    captions alone. Scoring against caption-derived IDF drops any query
-    term missing from every caption - so a question about the Tyndall
-    effect silently degrades to matching the word "effect", and returns
-    a confident-looking score for an unrelated figure. Weighted against
-    the subject's own vocabulary, a caption missing the rare term is
-    correctly penalised, and when no caption has it every figure scores
-    low and none is shown.
-
-    Terms unknown even to the subject's text (typos, or words it simply
-    never uses) are ignored - they cannot match anything.
-    """
-    query_terms = {term for term in tokenize(query) if term in idf}
-    if not query_terms:
-        return 0.0
-
-    text_terms = set(tokenize(text))
-    matched = sum(idf[term] for term in query_terms if term in text_terms)
-    total = sum(idf[term] for term in query_terms)
-    return matched / total if total else 0.0
 
 
 def _sigmoid(x: float) -> float:

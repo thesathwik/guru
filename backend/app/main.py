@@ -317,12 +317,15 @@ def list_figures(
         }
 
     query_vector = embeddings.embed_query(q)
-    scored = tutor.score_images(db, subject_id, query_vector, q)
+    scored, reranked = tutor.score_images(db, subject_id, query_vector, q)
     shown = {image["id"] for image in tutor._relevant_images(db, subject_id, query_vector, q)}
     return {
         "total": total,
         "with_caption": captioned,
         "query": q,
+        # Which scale the scores are on: a cross-encoder relevance
+        # probability, or raw RRF positions if the reranker is off.
+        "reranked": reranked,
         "ranked": [
             {
                 "id": row.id,

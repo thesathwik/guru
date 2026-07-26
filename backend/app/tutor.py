@@ -62,32 +62,36 @@ def _build_context(matches: list[dict]) -> str:
 # model changes, while "clearly better than this subject's typical
 # caption" holds regardless of the scale the model happens to produce.
 MIN_IMAGE_SCORE = float(os.environ.get("TUTOR_MIN_IMAGE_SCORE", "0.20"))
+# Cross-encoder relevance probability a figure must reach to be shown.
+# Unlike a cosine cutoff this is meaningful on its own: the model is
+# trained to output "is this passage relevant to this query".
+RERANK_MIN_SCORE = float(os.environ.get("TUTOR_RERANK_MIN_SCORE", "0.30"))
 IMAGE_STANDOUT_MARGIN = float(os.environ.get("TUTOR_IMAGE_MARGIN", "0.08"))
 IMAGE_KEEP_RATIO = float(os.environ.get("TUTOR_IMAGE_KEEP_RATIO", "0.85"))
 MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
 
 
-# Captions are short, and the embedding model in use is a *paraphrase*
-# model - built for sentence-vs-sentence similarity, not question ->
-# description retrieval. On short captions its cosine scores are close
-# to noise (asking about the Tyndall effect ranked "Arm-wrestling" and
-# "Meiosis" top). Distinctive words carry the signal instead: a caption
-# containing a rare query term like "tyndall" is almost certainly the
-# right figure, so lexical overlap is weighted above the vector score,
-# with the vector score kept to catch wording the question doesn't share
-# ("how plants make food" -> "Photosynthesis").
-LEXICAL_WEIGHT = float(os.environ.get("TUTOR_IMAGE_LEXICAL_WEIGHT", "0.7"))
-
-
 def score_images(
     db, subject_id: int, query_vector: list[float], query: str = ""
-) -> list[tuple[float, object]]:
-    """Scores every captioned figure in a subject against the question,
-    best first. No filtering - `_relevant_images` decides what to keep,
-    and the figures diagnostic endpoint shows the raw ranking."""
+) -> tuple[list[tuple[float, object]], bool]:
+    """Ranks a subject's captioned figures against the question, best
+    first, using the same two-stage pipeline as text retrieval: dense +
+    BM25 fused by RRF for candidates, then a cross-encoder over the
+    shortlist.
+
+    Question-against-caption is precisely what a cross-encoder is good
+    at and what a bi-encoder is not - both sides are short, so a
+    single-vector comparison has almost nothing to work with, which is
+    why "Effect of solutions of different concentrations on a cell" kept
+    scoring highly for a question about the Tyndall effect.
+
+    Returns (ranked, reranked) - `reranked` tells the caller which score
+    scale it is looking at, since a cross-encoder probability and an RRF
+    score need different cutoffs.
+    """
     import json
 
-    from . import models
+    from . import models, reranker
 
     rows = (
         db.query(models.MaterialImage)
@@ -98,19 +102,54 @@ def score_images(
         .all()
     )
     if not rows:
-        return []
+        return [], False
 
-    idf = embeddings.get_subject_idf(db, subject_id)
+    by_id = {row.id: row for row in rows}
 
-    scored = []
-    for row in rows:
-        semantic = embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding))
-        lexical = embeddings.lexical_overlap(query, row.caption, idf) if query else 0.0
-        combined = LEXICAL_WEIGHT * lexical + (1 - LEXICAL_WEIGHT) * semantic
-        scored.append((combined, row))
+    dense = {
+        row.id: embeddings.cosine_similarity(query_vector, json.loads(row.caption_embedding))
+        for row in rows
+    }
+    rankings = [sorted(dense, key=dense.get, reverse=True)]
+    weights = [embeddings.DENSE_WEIGHT]
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return scored
+    if query:
+        # Term weights come from the subject's chunk text - captions are
+        # too small a corpus to tell a rare word from a common one.
+        idf = embeddings.get_subject_idf(db, subject_id)
+        caption_tokens = {row.id: embeddings.tokenize(row.caption) for row in rows}
+        average_length = sum(len(t) for t in caption_tokens.values()) / max(len(rows), 1)
+        query_terms = embeddings.tokenize(query)
+
+        sparse = {}
+        for row in rows:
+            tokens = caption_tokens[row.id]
+            counts: dict[str, int] = {}
+            for term in tokens:
+                counts[term] = counts.get(term, 0) + 1
+            sparse[row.id] = embeddings.bm25_score(
+                query_terms, counts, len(tokens), idf, average_length
+            )
+
+        best = max(sparse.values(), default=0.0)
+        floor = best * embeddings.SPARSE_MIN_RATIO
+        matched = [i for i, score in sparse.items() if score > 0 and score >= floor]
+        matched.sort(key=sparse.get, reverse=True)
+        if matched:
+            rankings.append(matched)
+            weights.append(embeddings.SPARSE_WEIGHT)
+
+    fused = embeddings.reciprocal_rank_fusion(rankings, weights=weights)
+    order = sorted(fused, key=fused.get, reverse=True)
+
+    shortlist = order[: reranker.CANDIDATES]
+    scores = reranker.rerank(query, [by_id[i].caption for i in shortlist]) if query else None
+
+    if scores is not None:
+        ranked = sorted(zip(scores, shortlist), key=lambda pair: pair[0], reverse=True)
+        return [(embeddings._sigmoid(float(s)), by_id[i]) for s, i in ranked], True
+
+    return [(fused[i], by_id[i]) for i in shortlist], False
 
 
 def _relevant_images(db, subject_id: int, query_vector: list[float], query: str = "") -> list[dict]:
@@ -123,25 +162,48 @@ def _relevant_images(db, subject_id: int, query_vector: list[float], query: str 
     figure depicts, so scoring against the caption picks the figure that
     actually answers the question.
 
-    Selection is relative rather than a fixed cutoff: the best figure
-    must beat the subject's median caption score by a margin. On a
-    question a figure really illustrates, one caption stands out sharply
-    from the rest; on a question with no matching figure, every caption
-    scores about the same and nothing is shown.
+    When the cross-encoder ran, its output is a calibrated relevance
+    probability, so a plain threshold works and is far more predictable
+    than any heuristic over bi-encoder cosines - an irrelevant caption
+    scores near zero rather than merely lower than its neighbours.
+
+    Without it, scores are RRF positions with no inherent meaning, so
+    selection falls back to a relative rule: the best figure must beat
+    the subject's median by a margin. On a question a figure really
+    illustrates one caption stands out sharply; when nothing matches,
+    every caption scores about the same and nothing is shown.
     """
     import statistics
 
-    scored = score_images(db, subject_id, query_vector, query)
+    scored, reranked = score_images(db, subject_id, query_vector, query)
     if not scored:
         return []
 
-    best = scored[0][0]
-    median = statistics.median([score for score, _ in scored])
+    if reranked:
+        cutoff = RERANK_MIN_SCORE
+        if scored[0][0] < cutoff:
+            return []
+    else:
+        # RRF scores are positions, not similarities - an absolute floor
+        # meant for cosines rejects everything here - so normalise to the
+        # best hit and judge by separation instead.
+        best = scored[0][0]
+        if best <= 0:
+            return []
+        scored = [(score / best, row) for score, row in scored]
 
-    if best < MIN_IMAGE_SCORE or best - median < IMAGE_STANDOUT_MARGIN:
-        return []
-
-    cutoff = max(best * IMAGE_KEEP_RATIO, median + IMAGE_STANDOUT_MARGIN)
+        # Without the cross-encoder, captions sharing a common word
+        # ("Effect of solutions on a cell" against "Tyndall effect")
+        # land near-tied, and nothing left can tell them apart. Showing
+        # the wrong figure is worse than showing none, so this only
+        # fires when one figure is clearly ahead, and then shows just it.
+        runner_up = scored[1][0] if len(scored) > 1 else 0.0
+        if runner_up > IMAGE_KEEP_RATIO:
+            return []
+        median = statistics.median([score for score, _ in scored])
+        if 1.0 - median < IMAGE_STANDOUT_MARGIN:
+            return []
+        cutoff = IMAGE_KEEP_RATIO
 
     return [
         {

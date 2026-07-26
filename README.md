@@ -40,19 +40,18 @@ questions grounded only in that subject's material, via Azure OpenAI.
   losing the words that identify the figure. Captions are
   embedded, and at question time figures are ranked by how well their
   caption matches the question - a figure is shown because it depicts
-  what was asked about. Ranking is *hybrid*: mostly IDF-weighted lexical
-  overlap (weights taken from the subject's own chunk text, not from the
-  captions - scoring against caption-derived IDF drops any query term no
-  caption contains, so "what is the tyndall effect" degrades to matching
-  the word "effect" and confidently returns an unrelated figure), plus
-  the caption embedding. The embedding model in use is a
-  paraphrase model (symmetric sentence similarity), and on short
-  captions its question-to-caption scores are near noise - asking about
-  the Tyndall effect ranked "Arm-wrestling" and "Meiosis" above the
-  figure captioned "Demonstration of Tyndall effect". Rare query terms
-  ("tyndall") are the reliable signal, so they dominate; the vector
-  score is kept for wording the caption doesn't share ("how plants make
-  food" -> "Photosynthesis"). An earlier version used page proximity (show
+  what was asked about. Figures go through the same two-stage
+  pipeline as text - dense + BM25 fused by RRF, then cross-encoder
+  reranking - with term weights borrowed from the subject's chunk text,
+  since the caption corpus is too small to tell a rare word from a
+  common one. Question-against-caption is exactly what a bi-encoder
+  handles worst (both sides are short, so a single-vector comparison has
+  little to work with) and what a cross-encoder handles best, which is
+  why "Effect of solutions of different concentrations on a cell" kept
+  surfacing for a question about the Tyndall effect until reranking was
+  applied here too. If the reranker is unavailable, near-tied captions
+  cannot be told apart, so the fallback shows nothing rather than
+  guessing. An earlier version used page proximity (show
   everything sharing a page with a matching passage), which surfaced
   whatever else happened to be on that page: a blood-centrifugation
   diagram for a Tyndall-effect question. Figures with no caption text
