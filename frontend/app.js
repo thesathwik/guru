@@ -283,4 +283,20 @@ document.getElementById("chat-form").addEventListener("submit", async (e) => {
   }
 });
 
+const tabButtons = document.querySelectorAll(".tab-button");
+const tabPanels = {
+  chat: document.getElementById("chat-panel"),
+  materials: document.getElementById("materials-panel"),
+};
+
+for (const button of tabButtons) {
+  button.addEventListener("click", () => {
+    for (const b of tabButtons) b.classList.remove("active");
+    button.classList.add("active");
+    for (const [name, panel] of Object.entries(tabPanels)) {
+      panel.hidden = name !== button.dataset.tab;
+    }
+  });
+}
+
 loadSubjects();

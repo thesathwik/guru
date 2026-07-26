@@ -25,29 +25,12 @@
       <div id="subject-view" class="subject-view" hidden>
         <h2 id="subject-title"></h2>
 
-        <form id="upload-form">
-          <input id="upload-input" type="file" accept=".pdf,.docx,.txt,.md" multiple required />
-          <button type="submit">Upload material</button>
-        </form>
-        <p class="hint">Supported: PDF, DOCX, TXT, MD &mdash; select multiple to upload them all at once</p>
+        <div class="tabs">
+          <button type="button" class="tab-button active" data-tab="chat">Chat</button>
+          <button type="button" class="tab-button" data-tab="materials">Materials</button>
+        </div>
 
-        <div id="upload-progress-list" class="upload-progress-list"></div>
-
-        <table class="materials-table">
-          <thead>
-            <tr>
-              <th>File</th>
-              <th>Status</th>
-              <th>Chunks</th>
-              <th>Uploaded</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="materials-body"></tbody>
-        </table>
-
-        <div class="tutor-section">
-          <h3>Ask your tutor</h3>
+        <div id="chat-panel" class="tab-panel">
           <div id="chat-messages" class="chat-messages">
             <div class="chat-empty">Ask a question about this subject's material to get started.</div>
           </div>
@@ -55,6 +38,29 @@
             <input id="chat-input" type="text" placeholder="Ask a question..." autocomplete="off" required />
             <button type="submit">Send</button>
           </form>
+        </div>
+
+        <div id="materials-panel" class="tab-panel" hidden>
+          <form id="upload-form">
+            <input id="upload-input" type="file" accept=".pdf,.docx,.txt,.md" multiple required />
+            <button type="submit">Upload material</button>
+          </form>
+          <p class="hint">Supported: PDF, DOCX, TXT, MD &mdash; select multiple to upload them all at once</p>
+
+          <div id="upload-progress-list" class="upload-progress-list"></div>
+
+          <table class="materials-table">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Status</th>
+                <th>Chunks</th>
+                <th>Uploaded</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="materials-body"></tbody>
+          </table>
         </div>
       </div>
     </main>
