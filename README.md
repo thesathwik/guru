@@ -78,12 +78,20 @@ questions grounded only in that subject's material, via Azure OpenAI.
   vector stores. `GET /api/subjects/{id}/search?q=...` does a
   brute-force search scoped to that subject (fine at this scale - a
   personal library of at most a few thousand chunks per subject).
-  Scoring blends IDF-weighted term overlap with the vector score, for
-  the same reason as figures: the embedding is a paraphrase model, and
-  alone it returns loosely-related passages (pollination and
-  potential-energy text for a question about neither). Term overlap
-  pins results to the question's distinctive words; the vector score
-  still carries wording the passage phrases differently.
+  Retrieval is a two-stage pipeline. Stage 1 runs dense vector search
+  and BM25 independently and fuses their *rankings* with weighted
+  Reciprocal Rank Fusion - fusing ranks rather than scores avoids
+  weighting two incompatible scales, and the two are complementary
+  (dense handles paraphrase, BM25 nails rare exact terms like
+  "Tyndall" that dense washes out). BM25 is weighted above dense, and
+  only chunks scoring a real share of the best BM25 score get to vote,
+  since a passage sharing nothing but "is" otherwise gets a faint vote
+  that can lift it over the answer. Stage 2 reranks the shortlist with
+  a cross-encoder (`jina-reranker-v2-base-multilingual`), which reads
+  query and passage *together* rather than comparing vectors encoded in
+  ignorance of each other - the thing a bi-encoder fundamentally cannot
+  do. Reranking is optional and degrades to the fused ranking if the
+  model can't be loaded.
 
 ## Running locally / on the VM
 
