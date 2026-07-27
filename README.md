@@ -89,8 +89,15 @@ questions grounded only in that subject's material, via Azure OpenAI.
   a cross-encoder (`jina-reranker-v2-base-multilingual`), which reads
   query and passage *together* rather than comparing vectors encoded in
   ignorance of each other - the thing a bi-encoder fundamentally cannot
-  do. Reranking is optional and degrades to the fused ranking if the
-  model can't be loaded.
+  do. Reranking is **off by default** and degrades to the fused ranking when
+  unavailable. It measurably improves ranking, but the model needs well
+  over a gigabyte resident: enabling it on a 3.8GB VM with no swap made
+  the *host* unresponsive after a single question, not just the app.
+  Enable it only with memory to spare, and note the compose files cap
+  the container's memory and CPU so a runaway container is killed and
+  restarted instead of taking the machine with it. ONNX Runtime is also
+  pinned to one thread per model - left alone it starts a worker per
+  core and starves everything else on a small VM, sshd included.
 
 ## Running locally / on the VM
 

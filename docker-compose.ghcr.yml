@@ -11,6 +11,10 @@ services:
       # mount below, or the database silently ends up in the container's
       # throwaway layer instead of the persistent volume.
       - APP_DATA_DIR=/app/data
+    # See docker-compose.yml - keeps a runaway container from taking the
+    # whole host down with it.
+    mem_limit: 2500m
+    cpus: 1.5
     volumes:
       - guru-data:/app/data
 

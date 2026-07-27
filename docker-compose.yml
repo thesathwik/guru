@@ -12,6 +12,13 @@ services:
       # mount below, or the database silently ends up in the container's
       # throwaway layer instead of the persistent volume.
       - APP_DATA_DIR=/app/data
+    # Leave the host enough memory and CPU to stay usable. Without these
+    # the container can consume everything on a small VM - the ML models
+    # are happy to - and the machine becomes unreachable, sshd included,
+    # rather than just the app failing. With them, a runaway container is
+    # killed and restarted while the host stays up.
+    mem_limit: 2500m
+    cpus: 1.5
     volumes:
       - guru-data:/app/data
 

@@ -20,12 +20,20 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = os.environ.get(
     "RERANKER_MODEL", "jinaai/jina-reranker-v2-base-multilingual"
 )
-ENABLED = os.environ.get("RERANKER_ENABLED", "1") not in ("0", "false", "False")
+
+# Off by default. The model needs well over a gigabyte of resident
+# memory, and on a small VM with no swap that is enough to push the host
+# into thrashing - taking the whole machine down, not just the app.
+# Turn it on only where there is headroom to spare (see README).
+ENABLED = os.environ.get("RERANKER_ENABLED", "0") not in ("0", "false", "False")
 
 # How many first-stage candidates to rerank. Larger recovers more
-# relevant passages the first stage ranked poorly, at roughly linear
-# CPU cost.
-CANDIDATES = int(os.environ.get("RERANKER_CANDIDATES", "30"))
+# passages the first stage ranked poorly, at roughly linear CPU cost.
+CANDIDATES = int(os.environ.get("RERANKER_CANDIDATES", "10"))
+
+# ONNX Runtime otherwise starts a worker per core and saturates the box,
+# which starves everything else on a small VM - including sshd.
+THREADS = int(os.environ.get("RERANKER_THREADS", "1"))
 
 _load_failed = False
 
@@ -34,7 +42,7 @@ _load_failed = False
 def _get_model():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-    return TextCrossEncoder(model_name=MODEL_NAME)
+    return TextCrossEncoder(model_name=MODEL_NAME, threads=THREADS)
 
 
 def available() -> bool:

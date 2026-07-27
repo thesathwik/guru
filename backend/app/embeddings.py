@@ -27,11 +27,16 @@ SPARSE_MIN_RATIO = float(os.environ.get("RETRIEVAL_SPARSE_MIN_RATIO", "0.1"))
 
 
 
+# ONNX Runtime defaults to a worker thread per core, which saturates a
+# small VM and starves everything else on it, sshd included.
+EMBED_THREADS = int(os.environ.get("EMBEDDING_THREADS", "1"))
+
+
 @lru_cache(maxsize=1)
 def _get_model():
     from fastembed import TextEmbedding
 
-    return TextEmbedding(model_name=MODEL_NAME)
+    return TextEmbedding(model_name=MODEL_NAME, threads=EMBED_THREADS)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
