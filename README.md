@@ -277,6 +277,29 @@ outbound access to Hugging Face. If a build ever fails at the
 `fastembed` model-download step, that's a build-time network issue
 (e.g. building somewhere without internet access), not a runtime bug.
 
+The reranker is not baked in by default - it adds ~1.1GB and is opt-in.
+To use it, build with it included and enable it:
+
+```bash
+docker compose build --build-arg INCLUDE_RERANKER=1
+# and set RERANKER_ENABLED=1 in .env
+```
+
+## If the VM becomes unreachable
+
+The container restarts automatically, so a container that exhausts the
+host comes straight back after a reboot and wedges it again before you
+can log in. Break that loop with Azure Portal -> the VM -> Run command
+-> `RunShellScript`, which does not need SSH:
+
+```bash
+docker update --restart=no guru-guru-1 && docker stop guru-guru-1
+```
+
+Then SSH in, `git pull`, rebuild, and start it again. The compose files
+cap container memory and CPU, so this should not recur - but Run command
+is the way back in if anything ever does wedge the host.
+
 ## Next steps (not in this pass)
 
 - Persist chat history server-side (currently client-side only, per
