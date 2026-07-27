@@ -16,10 +16,24 @@ questions grounded only in that subject's material, via Azure OpenAI.
   splits it into overlapping chunks, then saves the result as JSON at
   `{subject}/processed/{filename}.json`. The material's status moves
   through `uploaded -> processing -> processed` (or `error`).
-- **Storage backend** is pluggable (`backend/app/storage.py`):
-  - If `AZURE_STORAGE_CONNECTION_STRING` is set, files go to Azure Blob
-    Storage.
-  - Otherwise, files are stored on local disk under `data/materials/`.
+- **Storage backend** is pluggable (`backend/app/storage.py`), chosen in
+  this order:
+  - `GCS_BUCKET` set -> Google Cloud Storage.
+  - `AZURE_STORAGE_CONNECTION_STRING` set -> Azure Blob Storage.
+  - Neither -> local disk under `data/materials/`.
+
+  GCS takes precedence so it can be switched on while the Azure settings
+  are still in place. See [DEPLOY_GCP.md](DEPLOY_GCP.md) for running on
+  Cloud Run.
+- **Database** is SQLite by default, or whatever `DATABASE_URL` points
+  at. Cloud Run instances are ephemeral, so a SQLite file there would be
+  discarded on every restart - a managed database (Cloud SQL) is
+  required, not merely nicer.
+- **The tutor's LLM** is Vertex AI (Gemini) when `GOOGLE_CLOUD_PROJECT`
+  is set, otherwise Azure AI Foundry. Vertex exposes an
+  OpenAI-compatible endpoint, so both go through the same client, and
+  Vertex authenticates as the service account the app already runs as -
+  no API key to hold.
 - **PDF text extraction** uses PyMuPDF (`fitz`), which correctly
   handles complex/reordering scripts (e.g. Devanagari/Hindi) - verified
   against a real NCERT Hindi textbook PDF. An earlier version used

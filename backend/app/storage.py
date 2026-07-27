@@ -89,6 +89,43 @@ class AzureBlobStorage(StorageBackend):
         return [blob.name for blob in self.container.list_blobs(name_starts_with=prefix)]
 
 
+class GCSStorage(StorageBackend):
+    """Stores files in a Google Cloud Storage bucket. Like blob storage,
+    GCS has no real directories - a subject is a name prefix
+    ('social/raw/notes.pdf')."""
+
+    def __init__(self, bucket_name: str, prefix: str = ""):
+        from google.cloud import storage as gcs
+
+        self.client = gcs.Client()
+        self.bucket = self.client.bucket(bucket_name)
+        # Optional prefix so one bucket can hold more than this app.
+        self.prefix = f"{prefix.strip('/')}/" if prefix.strip("/") else ""
+
+    def _key(self, path: str) -> str:
+        return f"{self.prefix}{path}"
+
+    def save(self, path: str, data: bytes) -> None:
+        self.bucket.blob(self._key(path)).upload_from_string(data)
+
+    def read(self, path: str) -> bytes:
+        return self.bucket.blob(self._key(path)).download_as_bytes()
+
+    def exists(self, path: str) -> bool:
+        return self.bucket.blob(self._key(path)).exists()
+
+    def delete_prefix(self, prefix: str) -> None:
+        for blob in self.client.list_blobs(self.bucket, prefix=self._key(prefix)):
+            blob.delete()
+
+    def list_all(self, prefix: str = "") -> list[str]:
+        start = len(self.prefix)
+        return [
+            blob.name[start:]
+            for blob in self.client.list_blobs(self.bucket, prefix=self._key(prefix))
+        ]
+
+
 _storage_instance: StorageBackend | None = None
 
 
@@ -97,8 +134,12 @@ def get_storage() -> StorageBackend:
     if _storage_instance is not None:
         return _storage_instance
 
+    bucket = os.environ.get("GCS_BUCKET")
     connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-    if connection_string:
+
+    if bucket:
+        _storage_instance = GCSStorage(bucket, os.environ.get("GCS_PREFIX", ""))
+    elif connection_string:
         container = os.environ.get("AZURE_STORAGE_CONTAINER", "materials")
         _storage_instance = AzureBlobStorage(connection_string, container)
     else:

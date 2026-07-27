@@ -24,18 +24,42 @@ class TutorNotConfigured(Exception):
     pass
 
 
+def _vertex_config() -> tuple[str, str] | None:
+    """Vertex AI exposes an OpenAI-compatible endpoint, so Gemini can be
+    driven through the same client as any other provider. Auth uses the
+    service account Cloud Run already runs as - no API key to manage."""
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if not project:
+        return None
+
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    endpoint = (
+        f"https://{location}-aiplatform.googleapis.com/v1/"
+        f"projects/{project}/locations/{location}/endpoints/openapi"
+    )
+
+    import google.auth
+    import google.auth.transport.requests
+
+    credentials, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    credentials.refresh(google.auth.transport.requests.Request())
+    return endpoint, credentials.token
+
+
 def _get_client():
     global _client
     if _client is not None:
         return _client
 
-    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-    if not endpoint or not api_key:
-        raise TutorNotConfigured(
-            "Azure OpenAI is not configured - set AZURE_OPENAI_ENDPOINT, "
-            "AZURE_OPENAI_API_KEY, and AZURE_OPENAI_DEPLOYMENT in .env"
-        )
+    from openai import OpenAI
+
+    vertex = _vertex_config()
+    if vertex:
+        endpoint, token = vertex
+        _client = OpenAI(base_url=endpoint, api_key=token)
+        return _client
 
     # Azure AI Foundry's unified "v1" endpoint (https://<resource>.services
     # .ai.azure.com/openai/v1) is OpenAI-API-compatible, including for
@@ -43,10 +67,28 @@ def _get_client():
     # plain OpenAI client with a custom base_url, not the AzureOpenAI
     # client (which targets the older *.openai.azure.com resource shape
     # and builds a different URL path).
-    from openai import OpenAI
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+    if endpoint and api_key:
+        _client = OpenAI(base_url=endpoint, api_key=api_key)
+        return _client
 
-    _client = OpenAI(base_url=endpoint, api_key=api_key)
-    return _client
+    raise TutorNotConfigured(
+        "No LLM configured - set GOOGLE_CLOUD_PROJECT (Vertex AI) or "
+        "AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_API_KEY (Azure AI Foundry)"
+    )
+
+
+def _model_name() -> str:
+    """Vertex names models directly ('google/gemini-2.5-flash'); Azure
+    addresses a deployment you named yourself."""
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        return os.environ.get("VERTEX_MODEL", "google/gemini-2.5-flash")
+
+    deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+    if not deployment:
+        raise TutorNotConfigured("AZURE_OPENAI_DEPLOYMENT is not set")
+    return deployment
 
 
 def _build_context(matches: list[dict]) -> str:
@@ -242,12 +284,8 @@ def answer_question(
             messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": question})
 
-    deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-    if not deployment:
-        raise TutorNotConfigured("AZURE_OPENAI_DEPLOYMENT is not set in .env")
-
     response = _get_client().chat.completions.create(
-        model=deployment,
+        model=_model_name(),
         messages=messages,
         temperature=0.3,
     )
