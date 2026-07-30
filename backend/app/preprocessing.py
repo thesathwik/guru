@@ -212,7 +212,16 @@ def extract_images(
             if ext not in _WEB_SAFE_IMAGE_FORMATS:
                 try:
                     pixmap = fitz.Pixmap(doc, payload["xref"])
-                    if pixmap.n - pixmap.alpha >= 4:  # CMYK -> RGB
+                    # Decide on the colourspace, not the channel count. A
+                    # separation image (spot black, common for greyscale
+                    # photos in print-ready textbook PDFs) reports
+                    # DeviceN(1,DeviceCMYK,Black) with n == 1, so an
+                    # `n - alpha >= 4` CMYK test leaves it unconverted -
+                    # and tobytes("png") then rejects it outright with
+                    # "pixmap must be grayscale or rgb", silently losing
+                    # the figure.
+                    colorspace = pixmap.colorspace
+                    if colorspace is None or colorspace.name not in ("DeviceGray", "DeviceRGB"):
                         pixmap = fitz.Pixmap(fitz.csRGB, pixmap)
                     image_data, ext = pixmap.tobytes("png"), "png"
                 except Exception:  # noqa: BLE001 - skip unconvertible images
