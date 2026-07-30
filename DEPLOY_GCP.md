@@ -4,6 +4,12 @@ Cloud Run is stateless, which changes two things from the VM setup:
 uploaded files must live in GCS (they already can), and the database has
 to be managed rather than a SQLite file on disk.
 
+The live deployment of this app runs in project `bicycle-503702`
+(us-central1) at <https://guru-981400413289.us-central1.run.app>. Pushes
+to `main` redeploy it via `.github/workflows/deploy.yml`; the steps below
+are what that pipeline was built on, and what to repeat for a fresh
+project.
+
 Set these once:
 
 ```bash
@@ -12,7 +18,9 @@ export REGION=us-central1
 gcloud config set project $PROJECT
 gcloud services enable run.googleapis.com sqladmin.googleapis.com \
   aiplatform.googleapis.com storage.googleapis.com \
-  artifactregistry.googleapis.com cloudbuild.googleapis.com
+  artifactregistry.googleapis.com cloudbuild.googleapis.com \
+  secretmanager.googleapis.com iamcredentials.googleapis.com \
+  sts.googleapis.com
 ```
 
 ## 1. Bucket for materials
@@ -28,28 +36,58 @@ Cloud Run instances are ephemeral, so SQLite would be discarded on every
 restart. This is the smallest tier; it is the main fixed cost of running
 serverless here.
 
-```bash
-gcloud sql instances create guru-db \
-  --database-version=POSTGRES_16 --tier=db-f1-micro --region=$REGION
-gcloud sql databases create guru --instance=guru-db
-gcloud sql users create guru --instance=guru-db --password='CHOOSE-A-PASSWORD'
+`--edition=enterprise` is required: new instances default to Enterprise
+Plus, which rejects shared-core tiers like `db-f1-micro` outright.
 
-export INSTANCE=$(gcloud sql instances describe guru-db \
+```bash
+gcloud sql instances create guru-pg \
+  --database-version=POSTGRES_16 --edition=enterprise --tier=db-f1-micro \
+  --region=$REGION --storage-size=10GB --storage-auto-increase
+
+# Keep the password out of shell history and out of the Cloud Run
+# config: generate it, store it, and never print it. Alphanumeric only,
+# so it needs no URL-escaping inside the DSN.
+PW=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+export INSTANCE=$(gcloud sql instances describe guru-pg \
   --format='value(connectionName)')
+
+gcloud sql databases create guru --instance=guru-pg
+gcloud sql users create guru --instance=guru-pg --password="$PW"
+
+printf '%s' "$PW" | gcloud secrets create guru-db-password --data-file=-
+printf 'postgresql://guru:%s@/guru?host=/cloudsql/%s' "$PW" "$INSTANCE" \
+  | gcloud secrets create guru-database-url --data-file=-
 ```
+
+### Stopping it when idle
+
+The instance is the only always-on cost here. Stop it when you are not
+using the app; the data survives, and storage still bills a little.
+
+```bash
+gcloud sql instances patch guru-pg --activation-policy=NEVER   # stop
+gcloud sql instances patch guru-pg --activation-policy=ALWAYS  # start
+```
+
+Cloud Run stays up while it is stopped, but every request that touches
+the database will error until you start it again.
 
 ## 3. Service account
 
 One identity for the app, granted only what it needs: read/write the
 bucket, connect to Cloud SQL, call Vertex AI. No API keys anywhere.
 
+Account IDs must be 6-30 characters, so `guru` is rejected - hence
+`guru-app`.
+
 ```bash
-gcloud iam service-accounts create guru --display-name="Guru tutor"
-export SA=guru@${PROJECT}.iam.gserviceaccount.com
+gcloud iam service-accounts create guru-app --display-name="Guru tutor"
+export SA=guru-app@${PROJECT}.iam.gserviceaccount.com
 
 gcloud storage buckets add-iam-policy-binding gs://$BUCKET \
   --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
-for ROLE in roles/cloudsql.client roles/aiplatform.user; do
+for ROLE in roles/cloudsql.client roles/aiplatform.user \
+            roles/secretmanager.secretAccessor; do
   gcloud projects add-iam-policy-binding $PROJECT \
     --member="serviceAccount:$SA" --role=$ROLE
 done
@@ -62,9 +100,20 @@ chunking, embedding) runs as a background task *after* the upload
 response is returned. With Cloud Run's default throttling the CPU is cut
 to near zero at that point, and uploads sit in `processing` forever.
 
+The DSN arrives via `--set-secrets` rather than `--set-env-vars`, so the
+database password is not readable in the service's configuration.
+
 ```bash
+gcloud artifacts repositories create guru --repository-format=docker \
+  --location=$REGION
+
+# Build in the cloud: Cloud Run needs linux/amd64, and an Apple-silicon
+# machine would otherwise produce an arm64 image that will not start.
+gcloud builds submit \
+  --tag $REGION-docker.pkg.dev/$PROJECT/guru/guru:initial --timeout=1800s .
+
 gcloud run deploy guru \
-  --source . \
+  --image=$REGION-docker.pkg.dev/$PROJECT/guru/guru:initial \
   --region=$REGION \
   --service-account=$SA \
   --add-cloudsql-instances=$INSTANCE \
@@ -73,8 +122,56 @@ gcloud run deploy guru \
   --timeout=600 \
   --min-instances=0 --max-instances=2 \
   --allow-unauthenticated \
-  --set-env-vars="GCS_BUCKET=$BUCKET,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION,DATABASE_URL=postgresql://guru:CHOOSE-A-PASSWORD@/guru?host=/cloudsql/$INSTANCE"
+  --set-env-vars="GCS_BUCKET=$BUCKET,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION" \
+  --set-secrets="DATABASE_URL=guru-database-url:latest"
 ```
+
+## 4b. The deploy pipeline
+
+`.github/workflows/deploy.yml` builds the image and deploys it on every
+push to `main`. It authenticates with Workload Identity Federation, so
+there is no service account key in the repository and nothing to rotate:
+GitHub mints an OIDC token, GCP exchanges it for short-lived credentials,
+and the trust is scoped to this one repository.
+
+```bash
+export PROJNUM=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
+export REPO=your-org/your-repo
+
+gcloud iam workload-identity-pools create github --location=global \
+  --display-name="GitHub Actions"
+gcloud iam workload-identity-pools providers create-oidc github-provider \
+  --location=global --workload-identity-pool=github \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository == '${REPO}'"
+```
+
+The attribute condition is the load-bearing part. Without it any
+repository on GitHub could present a token and impersonate the deployer.
+
+CI deploys under its own identity rather than the app's, so a leak of the
+build pipeline does not hand over the app's data access:
+
+```bash
+gcloud iam service-accounts create guru-deployer --display-name="Guru CI deployer"
+export DEPLOYER=guru-deployer@${PROJECT}.iam.gserviceaccount.com
+
+for ROLE in roles/run.admin roles/artifactregistry.writer; do
+  gcloud projects add-iam-policy-binding $PROJECT \
+    --member="serviceAccount:$DEPLOYER" --role=$ROLE
+done
+# ...and permission to set guru-app as the service's runtime identity.
+gcloud iam service-accounts add-iam-policy-binding $SA \
+  --member="serviceAccount:$DEPLOYER" --role=roles/iam.serviceAccountUser
+
+gcloud iam service-accounts add-iam-policy-binding $DEPLOYER \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/${PROJNUM}/locations/global/workloadIdentityPools/github/attribute.repository/${REPO}"
+```
+
+No GitHub secrets are needed; the identifiers in the workflow's `env`
+block are not sensitive.
 
 `--allow-unauthenticated` puts the app on the public internet with no
 login (it has none). See "Access" below.
@@ -105,7 +202,8 @@ gcloud run jobs create guru-recover \
   --image=$(gcloud run services describe guru --region=$REGION --format='value(spec.template.spec.containers[0].image)') \
   --region=$REGION --service-account=$SA \
   --set-cloudsql-instances=$INSTANCE \
-  --set-env-vars="GCS_BUCKET=$BUCKET,GOOGLE_CLOUD_PROJECT=$PROJECT,DATABASE_URL=postgresql://guru:CHOOSE-A-PASSWORD@/guru?host=/cloudsql/$INSTANCE" \
+  --set-env-vars="GCS_BUCKET=$BUCKET,GOOGLE_CLOUD_PROJECT=$PROJECT" \
+  --set-secrets="DATABASE_URL=guru-database-url:latest" \
   --command=python --args=-m,app.recover_from_storage
 gcloud run jobs execute guru-recover --region=$REGION --wait
 ```
@@ -122,10 +220,37 @@ running one instance.
 
 ## Reranking
 
-Off by default. On Cloud Run it is more practical than on a small VM,
-since memory is per-instance and billed only while serving: raise
-`--memory=4Gi`, build with `--build-arg INCLUDE_RERANKER=1`, and set
-`RERANKER_ENABLED=1`.
+Off by default, but **on** in this deployment - and effectively required
+for figures to appear at all.
+
+Without the cross-encoder, figure scores are RRF positions with no
+inherent meaning, so `_relevant_images` falls back to a relative rule:
+show a figure only when it beats the runner-up by `TUTOR_IMAGE_KEEP_RATIO`
+(0.85). The bi-encoder is a paraphrase model, and on a subject where many
+captions share a theme it cannot separate them that far - the correct
+figure ranks first and is still suppressed. With the cross-encoder the
+same query scores 0.78 against 0.06 for the runner-up, and a plain
+threshold (`TUTOR_RERANK_MIN_SCORE`, 0.30) does the job.
+
+It costs ~1.1GB of image size and a slower cold start, and - the part
+that bites - ~1.1GB of *resident* memory on any instance that has served
+a chat request, since the model is cached after first use. That instance
+also serves uploads, so the reranker and material processing compete for
+the same limit: enabling it on a 4Gi service with
+`MAX_CONCURRENT_PROCESSING=2` OOM-kills the container on a bulk upload.
+Raise memory and lower the processing concurrency together - this
+deployment runs 8Gi with 1.
+
+On Cloud Run that is affordable because memory is per-instance and billed
+only while serving:
+
+```bash
+gcloud builds submit --config=cloudbuild.reranker.yaml .   # --build-arg INCLUDE_RERANKER=1
+gcloud run deploy guru --image=... --memory=4Gi --update-env-vars=RERANKER_ENABLED=1
+```
+
+The GitHub Actions workflow already passes the build arg and sets the
+variable, so pushes keep it enabled.
 
 ## Access
 

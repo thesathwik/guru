@@ -6,62 +6,77 @@ on:
   workflow_dispatch: {}
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  PROJECT_ID: bicycle-503702
+  PROJECT_NUMBER: "981400413289"
+  REGION: us-central1
+  SERVICE: guru
+  # Artifact Registry repo "guru", image "guru".
+  IMAGE: us-central1-docker.pkg.dev/bicycle-503702/guru/guru
+  RUNTIME_SA: guru-app@bicycle-503702.iam.gserviceaccount.com
+  CLOUDSQL_INSTANCE: bicycle-503702:us-central1:guru-pg
+  BUCKET: bicycle-503702-guru-materials
 
 jobs:
-  build-and-push:
+  deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      # Required for Workload Identity Federation: lets the job mint the
+      # OIDC token that GCP exchanges for short-lived credentials. No
+      # service account key is stored in this repo.
+      id-token: write
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
+      - id: auth
+        uses: google-github-actions/auth@v2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          workload_identity_provider: projects/981400413289/locations/global/workloadIdentityPools/github/providers/github-provider
+          service_account: guru-deployer@bicycle-503702.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          # The cross-encoder has to be baked in: figure selection falls
+          # back to a relative rule without it, which is too weak to tell
+          # near-tied captions apart and so shows nothing at all.
+          build-args: INCLUDE_RERANKER=1
           tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      # --no-cpu-throttling matters: material processing (text extraction,
+      # chunking, embedding) runs as a background task *after* the upload
+      # response is returned. With default throttling the CPU is cut to
+      # near zero at that point and uploads sit in `processing` forever.
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --service-account=${{ env.RUNTIME_SA }} \
+            --add-cloudsql-instances=${{ env.CLOUDSQL_INSTANCE }} \
+            --memory=8Gi --cpu=2 \
+            --no-cpu-throttling \
+            --timeout=600 \
+            --concurrency=20 \
+            --min-instances=0 --max-instances=4 \
+            --allow-unauthenticated \
+            --set-env-vars="GCS_BUCKET=${{ env.BUCKET }},GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},MAX_CONCURRENT_PROCESSING=1,RERANKER_ENABLED=1" \
+            --set-secrets="DATABASE_URL=guru-database-url:latest"
 
-      - name: Copy docker-compose.ghcr.yml to VM
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          port: ${{ secrets.VM_SSH_PORT || 22 }}
-          source: "docker-compose.ghcr.yml"
-          target: "~/guru"
-
-      - name: Pull image and restart container on VM
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          port: ${{ secrets.VM_SSH_PORT || 22 }}
-          script: |
-            set -e
-            cd ~/guru
-            echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker compose -f docker-compose.ghcr.yml pull
-            docker compose -f docker-compose.ghcr.yml up -d --remove-orphans
-            docker image prune -f
+      - name: Show service URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE }} \
+            --region=${{ env.REGION }} --format='value(status.url)'
