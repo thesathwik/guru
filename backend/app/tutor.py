@@ -3,10 +3,16 @@ retrieving relevant chunks (scoped to that subject only, via
 embeddings.search_chunks) and asking an LLM to answer grounded in them.
 """
 import os
+from datetime import datetime, timedelta
 
 from . import embeddings
 
 _client = None
+_credentials = None
+
+# Refresh this far ahead of the stated expiry, so a request that takes a
+# while to generate does not start with a token about to die.
+_TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
 
 SYSTEM_PROMPT_TEMPLATE = """You are a patient, encouraging tutor helping a student study {subject_name}.
 
@@ -24,41 +30,72 @@ class TutorNotConfigured(Exception):
     pass
 
 
-def _vertex_config() -> tuple[str, str] | None:
+def _vertex_endpoint(project: str) -> str:
     """Vertex AI exposes an OpenAI-compatible endpoint, so Gemini can be
-    driven through the same client as any other provider. Auth uses the
-    service account Cloud Run already runs as - no API key to manage."""
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
-    if not project:
-        return None
-
+    driven through the same client as any other provider."""
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-    endpoint = (
+    return (
         f"https://{location}-aiplatform.googleapis.com/v1/"
         f"projects/{project}/locations/{location}/endpoints/openapi"
     )
 
-    import google.auth
-    import google.auth.transport.requests
 
-    credentials, _ = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
-    credentials.refresh(google.auth.transport.requests.Request())
-    return endpoint, credentials.token
+def _vertex_token() -> str:
+    """A currently-valid access token for the service account Cloud Run
+    already runs as - no API key to manage.
+
+    The credentials object is cached and refreshed on demand rather than
+    the *token* being captured once. Vertex access tokens last about an
+    hour, so an instance that stays warm longer than that would otherwise
+    keep presenting an expired token and fail every call with a 401 until
+    it happened to be recycled.
+    """
+    global _credentials
+
+    if _credentials is None:
+        import google.auth
+
+        _credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+
+    expiry = getattr(_credentials, "expiry", None)
+    expiring = False
+    if expiry is not None:
+        # google.auth stores this as a naive UTC datetime. Match whichever
+        # it hands back rather than assuming, so a library upgrade that
+        # starts returning an aware datetime does not raise TypeError here.
+        now = datetime.now(expiry.tzinfo) if expiry.tzinfo else datetime.utcnow()
+        expiring = expiry - now <= _TOKEN_REFRESH_MARGIN
+
+    if not _credentials.valid or expiring:
+        import google.auth.transport.requests
+
+        _credentials.refresh(google.auth.transport.requests.Request())
+
+    return _credentials.token
 
 
 def _get_client():
     global _client
-    if _client is not None:
-        return _client
 
     from openai import OpenAI
 
-    vertex = _vertex_config()
-    if vertex:
-        endpoint, token = vertex
-        _client = OpenAI(base_url=endpoint, api_key=token)
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if project:
+        # Re-checked on every call, not just the first: the client is
+        # long-lived but the token behind it is not. The SDK builds the
+        # Authorization header per request from this attribute, so
+        # assigning it is enough - there is no need to rebuild the client
+        # (which would throw away its connection pool each hour).
+        token = _vertex_token()
+        if _client is None:
+            _client = OpenAI(base_url=_vertex_endpoint(project), api_key=token)
+        else:
+            _client.api_key = token
+        return _client
+
+    if _client is not None:
         return _client
 
     # Azure AI Foundry's unified "v1" endpoint (https://<resource>.services
