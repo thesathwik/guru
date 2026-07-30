@@ -438,3 +438,411 @@ button:disabled {
   border-radius: 6px;
   font-size: 14px;
 }
+
+/* ------------------------------------------------------------- Tests */
+
+#tests-panel {
+  overflow-y: auto;
+}
+
+.test-section-label {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.test-material-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.test-material-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.test-material-item:hover {
+  background: #f7f7f8;
+}
+
+.test-material-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.test-material-meta {
+  color: #888;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.test-options {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 12px 0 4px;
+  flex-wrap: wrap;
+}
+
+.test-options label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #555;
+}
+
+.test-options select {
+  padding: 7px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.test-options button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.test-options button:disabled {
+  background: #a5a1e8;
+  cursor: default;
+}
+
+.secondary-button {
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  /* The element-level `button` rule sets colour to white for the primary
+     buttons, so a light button has to restate it or its label vanishes. */
+  color: #1a1a1a;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.secondary-button:hover {
+  background: #f7f7f8;
+}
+
+.test-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.test-list-heading {
+  font-size: 15px;
+  margin: 24px 0 8px;
+}
+
+.test-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 24px;
+}
+
+.test-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.test-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.test-list-title {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.test-list-meta {
+  font-size: 12px;
+  color: #888;
+}
+
+.test-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.test-list-actions button {
+  padding: 7px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.test-take-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.test-take-header h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.test-take-header .hint {
+  margin: 0;
+}
+
+.test-take-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.test-timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.test-timer.urgent {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.test-question,
+.test-result-item {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.test-question-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.test-question-number {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.test-question-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+}
+
+.test-question-points {
+  margin-left: auto;
+  font-size: 12px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
+.test-question-prompt {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.test-options-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.test-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.test-option:hover {
+  background: #f7f7f8;
+}
+
+.test-question textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+#test-submit {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  margin-bottom: 24px;
+}
+
+#test-submit:disabled {
+  background: #a5a1e8;
+  cursor: default;
+}
+
+.test-score {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #4f46e5;
+}
+
+/* A left edge carries the right/wrong signal, so it does not depend on
+   colour alone being noticed inside a dense block of feedback. */
+.test-result-item.correct {
+  border-left: 3px solid #16a34a;
+}
+
+.test-result-item.incorrect {
+  border-left: 3px solid #dc2626;
+}
+
+.test-result-item.unmarked {
+  border-left: 3px solid #d4d4d8;
+}
+
+.test-result-option {
+  padding: 7px 10px;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.test-result-option.chosen {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.test-result-option.correct-option {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+/* Chosen *and* correct: the green should win. */
+.test-result-option.chosen.correct-option {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.test-result-response {
+  padding: 10px;
+  border-radius: 6px;
+  background: #f7f7f8;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.test-result-feedback {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #444;
+}
+
+.test-result-expected {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.test-result-expected summary {
+  cursor: pointer;
+  color: #4f46e5;
+}
+
+.test-result-expected div {
+  margin-top: 6px;
+  padding: 10px;
+  background: #f7f7f8;
+  border-radius: 6px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.test-result-explanation {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.5;
+}
+
+.test-result-source {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #888;
+}

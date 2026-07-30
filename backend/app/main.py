@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import embeddings, models, preprocessing, schemas, tutor
+from . import embeddings, models, preprocessing, schemas, testgen, tutor
 from .database import Base, SessionLocal, apply_migrations, engine, get_db
 from .storage import get_storage
 from .utils import slugify
@@ -392,6 +392,230 @@ def chat_with_subject(
         return tutor.answer_question(db, subject, payload.message, history)
     except tutor.TutorNotConfigured as exc:
         raise HTTPException(503, str(exc))
+
+
+def _test_summary(db, test: models.Test) -> schemas.TestSummaryOut:
+    out = schemas.TestSummaryOut.model_validate(test)
+    out.material_filenames = [m.filename for m in test.materials]
+    submitted = [a for a in test.attempts if a.submitted_at is not None]
+    out.attempt_count = len(submitted)
+    out.best_score = max((a.score_points or 0.0 for a in submitted), default=None)
+    return out
+
+
+def _graded_answers(attempt: models.TestAttempt) -> list[schemas.GradedAnswerOut]:
+    by_question = {a.question_id: a for a in attempt.answers}
+    results = []
+    for question in attempt.test.questions:
+        answer = by_question.get(question.id)
+        results.append(
+            schemas.GradedAnswerOut(
+                question_id=question.id,
+                position=question.position,
+                kind=question.kind,
+                prompt=question.prompt,
+                options=json.loads(question.options) if question.options else None,
+                points=question.points,
+                selected_option=answer.selected_option if answer else None,
+                response=answer.response if answer else None,
+                awarded_points=answer.awarded_points if answer else None,
+                is_correct=answer.is_correct if answer else None,
+                feedback=answer.feedback if answer else None,
+                correct_option=question.correct_option,
+                expected_answer=question.expected_answer,
+                explanation=question.explanation,
+                source_filename=question.source_filename,
+                source_page=question.source_page,
+            )
+        )
+    return results
+
+
+def _attempt_out(attempt: models.TestAttempt) -> schemas.AttemptOut:
+    return schemas.AttemptOut(
+        id=attempt.id,
+        test_id=attempt.test_id,
+        started_at=attempt.started_at,
+        submitted_at=attempt.submitted_at,
+        score_points=attempt.score_points,
+        max_points=attempt.max_points,
+        answers=_graded_answers(attempt) if attempt.submitted_at else [],
+    )
+
+
+@app.post("/api/subjects/{subject_id}/tests", response_model=schemas.TestDetailOut)
+def create_test(
+    subject_id: int, payload: schemas.TestCreate, db: Session = Depends(get_db)
+):
+    """Generates a test synchronously.
+
+    Unlike material processing this is not a background task: it takes
+    tens of seconds, not minutes, and doing it inline means a failure
+    surfaces as a plain error the student can retry rather than a row
+    stuck in a "generating" state that nothing ever resumes.
+    """
+    subject = db.get(models.Subject, subject_id)
+    if subject is None:
+        raise HTTPException(404, "Subject not found")
+
+    count = max(1, min(payload.question_count, testgen.MAX_QUESTIONS))
+
+    # Only this subject's processed materials: an unprocessed one has no
+    # chunks, so it would silently contribute nothing to the test.
+    materials = (
+        db.query(models.Material)
+        .filter(
+            models.Material.subject_id == subject_id,
+            models.Material.id.in_(payload.material_ids or []),
+            models.Material.status == "processed",
+        )
+        .all()
+    )
+    if not materials:
+        raise HTTPException(
+            400, "Select at least one processed material to build the test from"
+        )
+
+    try:
+        questions = testgen.generate_questions(
+            db, subject, [m.id for m in materials], count
+        )
+    except testgen.TestGenerationError as exc:
+        raise HTTPException(422, str(exc))
+    except tutor.TutorNotConfigured as exc:
+        raise HTTPException(503, str(exc))
+
+    title = (payload.title or "").strip()
+    if not title:
+        title = ", ".join(m.filename for m in materials[:2])
+        if len(materials) > 2:
+            title += f" +{len(materials) - 2} more"
+
+    test = models.Test(
+        subject_id=subject.id,
+        title=title,
+        question_count=len(questions),
+        time_limit_minutes=payload.time_limit_minutes or None,
+        max_points=sum(q.points for q in questions),
+    )
+    test.materials = materials
+    test.questions = questions
+    db.add(test)
+    db.commit()
+    db.refresh(test)
+
+    return _test_detail(db, test)
+
+
+def _test_detail(db, test: models.Test) -> schemas.TestDetailOut:
+    out = schemas.TestDetailOut.model_validate(_test_summary(db, test).model_dump())
+    out.questions = [
+        schemas.TestQuestionOut(
+            id=q.id,
+            position=q.position,
+            kind=q.kind,
+            prompt=q.prompt,
+            options=json.loads(q.options) if q.options else None,
+            points=q.points,
+        )
+        for q in test.questions
+    ]
+    return out
+
+
+@app.get("/api/subjects/{subject_id}/tests", response_model=list[schemas.TestSummaryOut])
+def list_tests(subject_id: int, db: Session = Depends(get_db)):
+    if db.get(models.Subject, subject_id) is None:
+        raise HTTPException(404, "Subject not found")
+    tests = (
+        db.query(models.Test)
+        .filter_by(subject_id=subject_id)
+        .order_by(models.Test.created_at.desc())
+        .all()
+    )
+    return [_test_summary(db, t) for t in tests]
+
+
+@app.get("/api/tests/{test_id}", response_model=schemas.TestDetailOut)
+def get_test(test_id: int, db: Session = Depends(get_db)):
+    test = db.get(models.Test, test_id)
+    if test is None:
+        raise HTTPException(404, "Test not found")
+    return _test_detail(db, test)
+
+
+@app.delete("/api/tests/{test_id}")
+def delete_test(test_id: int, db: Session = Depends(get_db)):
+    test = db.get(models.Test, test_id)
+    if test is None:
+        raise HTTPException(404, "Test not found")
+    db.delete(test)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/tests/{test_id}/attempts", response_model=schemas.AttemptOut)
+def start_attempt(test_id: int, db: Session = Depends(get_db)):
+    test = db.get(models.Test, test_id)
+    if test is None:
+        raise HTTPException(404, "Test not found")
+    attempt = models.TestAttempt(test_id=test.id)
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+    return _attempt_out(attempt)
+
+
+@app.post("/api/attempts/{attempt_id}/submit", response_model=schemas.AttemptOut)
+def submit_attempt(
+    attempt_id: int, payload: schemas.AttemptSubmit, db: Session = Depends(get_db)
+):
+    attempt = db.get(models.TestAttempt, attempt_id)
+    if attempt is None:
+        raise HTTPException(404, "Attempt not found")
+    if attempt.submitted_at is not None:
+        raise HTTPException(400, "This attempt has already been submitted")
+
+    valid_ids = {q.id for q in attempt.test.questions}
+    submitted = {
+        a.question_id: a for a in payload.answers if a.question_id in valid_ids
+    }
+
+    # Record a row for every question, not only the answered ones, so an
+    # unanswered question is marked as blank rather than left absent.
+    for question in attempt.test.questions:
+        incoming = submitted.get(question.id)
+        db.add(
+            models.TestAnswer(
+                attempt_id=attempt.id,
+                question_id=question.id,
+                selected_option=incoming.selected_option if incoming else None,
+                response=(incoming.response or "").strip() or None if incoming else None,
+            )
+        )
+    db.flush()
+    db.refresh(attempt)
+
+    try:
+        testgen.grade_attempt(db, attempt)
+    except testgen.TestGenerationError as exc:
+        db.rollback()
+        raise HTTPException(422, f"Marking failed: {exc}")
+    except tutor.TutorNotConfigured as exc:
+        db.rollback()
+        raise HTTPException(503, str(exc))
+
+    db.commit()
+    db.refresh(attempt)
+    return _attempt_out(attempt)
+
+
+@app.get("/api/attempts/{attempt_id}", response_model=schemas.AttemptOut)
+def get_attempt(attempt_id: int, db: Session = Depends(get_db)):
+    attempt = db.get(models.TestAttempt, attempt_id)
+    if attempt is None:
+        raise HTTPException(404, "Attempt not found")
+    return _attempt_out(attempt)
 
 
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")

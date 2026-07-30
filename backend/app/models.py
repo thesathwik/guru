@@ -1,6 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    Text,
+)
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -17,6 +27,7 @@ class Subject(Base):
     materials = relationship(
         "Material", back_populates="subject", cascade="all, delete-orphan"
     )
+    tests = relationship("Test", back_populates="subject", cascade="all, delete-orphan")
 
 
 class Material(Base):
@@ -79,3 +90,101 @@ class MaterialImage(Base):
     caption_embedding = Column(Text, nullable=True)  # JSON-encoded list[float]
 
     material = relationship("Material", back_populates="images")
+
+
+# Which materials a test was generated from - the student picks these
+# before generating, so a test can be scoped to one chapter rather than
+# the whole subject. ON DELETE CASCADE keeps the rows from outliving a
+# deleted material; nothing re-reads them after generation, so a test
+# whose source material is later removed stays intact and takeable.
+test_materials = Table(
+    "test_materials",
+    Base.metadata,
+    Column("test_id", ForeignKey("tests.id", ondelete="CASCADE"), primary_key=True),
+    Column(
+        "material_id", ForeignKey("materials.id", ondelete="CASCADE"), primary_key=True
+    ),
+)
+
+
+class Test(Base):
+    __tablename__ = "tests"
+
+    id = Column(Integer, primary_key=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
+    title = Column(String, nullable=False)
+    question_count = Column(Integer, nullable=False)
+    # Minutes, or NULL for an untimed test. Enforced in the browser only -
+    # it paces the student rather than securing the test.
+    time_limit_minutes = Column(Integer, nullable=True)
+    max_points = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    subject = relationship("Subject", back_populates="tests")
+    materials = relationship("Material", secondary=test_materials)
+    questions = relationship(
+        "TestQuestion",
+        back_populates="test",
+        cascade="all, delete-orphan",
+        order_by="TestQuestion.position",
+    )
+    attempts = relationship(
+        "TestAttempt", back_populates="test", cascade="all, delete-orphan"
+    )
+
+
+class TestQuestion(Base):
+    __tablename__ = "test_questions"
+
+    id = Column(Integer, primary_key=True)
+    test_id = Column(Integer, ForeignKey("tests.id"), nullable=False)
+    position = Column(Integer, nullable=False)
+    kind = Column(String, nullable=False)  # mcq, short, long
+    prompt = Column(Text, nullable=False)
+    # MCQ only: JSON-encoded list[str], and the index of the right one.
+    options = Column(Text, nullable=True)
+    correct_option = Column(Integer, nullable=True)
+    # Written questions: the model answer the grader marks against. Also
+    # shown to the student as the correct answer after submission.
+    expected_answer = Column(Text, nullable=True)
+    explanation = Column(Text, nullable=True)
+    points = Column(Integer, nullable=False, default=1)
+    # Where in the material this came from, so a student can go and read
+    # the passage a question was drawn from.
+    source_filename = Column(String, nullable=True)
+    source_page = Column(Integer, nullable=True)
+
+    test = relationship("Test", back_populates="questions")
+
+
+class TestAttempt(Base):
+    __tablename__ = "test_attempts"
+
+    id = Column(Integer, primary_key=True)
+    test_id = Column(Integer, ForeignKey("tests.id"), nullable=False)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    submitted_at = Column(DateTime, nullable=True)
+    score_points = Column(Float, nullable=True)
+    max_points = Column(Integer, nullable=True)
+
+    test = relationship("Test", back_populates="attempts")
+    answers = relationship(
+        "TestAnswer", back_populates="attempt", cascade="all, delete-orphan"
+    )
+
+
+class TestAnswer(Base):
+    __tablename__ = "test_answers"
+
+    id = Column(Integer, primary_key=True)
+    attempt_id = Column(Integer, ForeignKey("test_attempts.id"), nullable=False)
+    question_id = Column(Integer, ForeignKey("test_questions.id"), nullable=False)
+    # MCQ answers arrive as an option index, written ones as text.
+    selected_option = Column(Integer, nullable=True)
+    response = Column(Text, nullable=True)
+    awarded_points = Column(Float, nullable=True)
+    is_correct = Column(Boolean, nullable=True)
+    feedback = Column(Text, nullable=True)
+
+    attempt = relationship("TestAttempt", back_populates="answers")
+    question = relationship("TestQuestion")
