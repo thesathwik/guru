@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -29,6 +30,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Processing one material holds the file in memory several times over:
+# the raw bytes, the extracted pages, the chunk text, the embeddings, and
+# every decoded figure - and the raw bytes stay alive throughout, since
+# _store_images needs them at the end. Each upload schedules its own
+# background task, so without a cap the peak scales with how fast someone
+# clicks Upload; a batch of ten textbooks is enough to OOM-kill the
+# container, which loses the work silently (SIGKILL skips the error
+# handler below, stranding rows in "processing"). Bound the parallelism
+# and let the rest queue up instead.
+MAX_CONCURRENT_PROCESSING = int(os.environ.get("MAX_CONCURRENT_PROCESSING", "2"))
+_processing_slots = threading.BoundedSemaphore(MAX_CONCURRENT_PROCESSING)
 
 
 def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
@@ -72,7 +86,15 @@ def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
 def process_material(material_id: int) -> None:
     """Runs in the background after upload: extracts text from the raw
     file, cleans and chunks it, and stores the processed result so an
-    LLM can consume it later. Updates the material's status as it goes."""
+    LLM can consume it later. Updates the material's status as it goes.
+
+    Waits for a free slot rather than running immediately - see
+    MAX_CONCURRENT_PROCESSING."""
+    with _processing_slots:
+        _process_material(material_id)
+
+
+def _process_material(material_id: int) -> None:
     db: Session = SessionLocal()
     try:
         material = db.get(models.Material, material_id)
