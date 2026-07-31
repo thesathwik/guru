@@ -45,6 +45,11 @@ MAX_CONCURRENT_PROCESSING = int(os.environ.get("MAX_CONCURRENT_PROCESSING", "2")
 _processing_slots = threading.BoundedSemaphore(MAX_CONCURRENT_PROCESSING)
 
 
+class ProcessingError(Exception):
+    """A material that cannot be indexed for a reason worth telling the
+    student about, as opposed to an unexpected crash."""
+
+
 def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
     """Extracts figures/diagrams from a PDF and records which page each
     came from, so retrieval can surface them alongside text from the
@@ -109,8 +114,27 @@ def _process_material(material_id: int) -> None:
         try:
             raw_bytes = storage.read(material.raw_path)
             pages = preprocessing.extract_pages(material.filename, raw_bytes)
+            reports = preprocessing.page_reports(material.filename, raw_bytes)
+            scanned = [r["page"] for r in reports if r["is_scan"]]
+            material.page_count = len(reports)
+            material.scanned_page_count = len(scanned)
+
             text, chunks = preprocessing.chunk_pages(pages)
             chunk_texts = [chunk["text"] for chunk in chunks]
+
+            # A scanned document yields no text at all, and used to be
+            # marked "processed" with zero chunks: the material looked fine
+            # in the UI while contributing nothing to any answer. Fail it
+            # loudly instead, and say why, so the upload is not silently
+            # useless.
+            if not chunk_texts:
+                if scanned:
+                    raise ProcessingError(
+                        f"This looks scanned or photographed: {len(scanned)} of "
+                        f"{len(reports)} pages are images with no readable text "
+                        "layer, so nothing could be indexed."
+                    )
+                raise ProcessingError("No readable text could be extracted from this file.")
 
             processed_path = f"{subject.slug}/processed/{material.filename}.json"
             payload = {
@@ -134,6 +158,10 @@ def _process_material(material_id: int) -> None:
                         text=chunk["text"],
                         embedding=json.dumps(vector),
                         page=chunk["page"],
+                        # Everything here came out of the file itself. OCR'd
+                        # text will arrive tagged differently so retrieval
+                        # can treat it accordingly.
+                        source="native",
                     )
                 )
 

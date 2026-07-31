@@ -1,3 +1,4 @@
+import os
 import re
 from io import BytesIO
 
@@ -21,6 +22,91 @@ def extract_pages(filename: str, data: bytes) -> list[str]:
 
 def extract_text(filename: str, data: bytes) -> str:
     return "\n\n".join(extract_pages(filename, data))
+
+
+# A page carrying less text than this, with most of its area covered by a
+# single content-bearing image, is a scan rather than a typeset page.
+#
+# The floor is deliberately near zero: the signal is "has no text layer",
+# not "has little text". A full-page map plate carries only its title and
+# a page number - 29 characters in one real textbook - yet is an ordinary
+# digital page whose figure must not be discarded. A scan has nothing at
+# all. Erring low costs at most a missed scan (today's behaviour), while
+# erring high destroys working figure retrieval.
+SCAN_TEXT_FLOOR = int(os.environ.get("SCAN_TEXT_FLOOR", "12"))
+SCAN_IMAGE_COVER = float(os.environ.get("SCAN_IMAGE_COVER", "0.55"))
+
+# Only images that actually carry content count towards page coverage.
+# Typeset textbooks lay a flat full-page texture on every page - a
+# 2480x3508 decoration compressing to 8KB - which otherwise makes every
+# page look fully covered, so a near-blank end page reads as a scan. A
+# photograph of a page is orders of magnitude denser than that. Same
+# reasoning (and threshold) as min_bytes_per_pixel in extract_images.
+SCAN_MIN_CONTENT_BPP = 0.01
+
+
+def _content_density(base: dict) -> float:
+    """Compressed bytes per pixel - a proxy for whether an image carries
+    content at all, as opposed to being a flat background."""
+    return len(base["image"]) / max(base["width"] * base["height"], 1)
+
+
+def page_reports(filename: str, data: bytes) -> list[dict]:
+    """Per-page diagnostics: how much text came out, how much of the page
+    is image, and whether that makes it a scan.
+
+    Detection is per page, not per document, because real uploads are
+    mixed - a typeset chapter with photographed pages inserted, or printed
+    notes with handwritten additions. Judging the whole file would either
+    send clean pages through OCR or skip the scanned ones entirely.
+    """
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext != "pdf":
+        # Only PDFs can carry an image-only page; the other formats are
+        # text by definition.
+        return [
+            {"page": i, "chars": len(clean_text(text).strip()), "image_cover": 0.0,
+             "is_scan": False}
+            for i, text in enumerate(extract_pages(filename, data), start=1)
+        ]
+
+    import fitz
+
+    reports = []
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        for page_number, page in enumerate(doc, start=1):
+            chars = len(clean_text(page.get_text()).strip())
+            page_area = abs(page.rect.width * page.rect.height) or 1.0
+
+            # Largest single image, not the sum: overlapping decorations
+            # would otherwise add up past the whole page and look like a
+            # scan. One image covering most of the page is the signal.
+            largest = 0.0
+            for image in page.get_images(full=True):
+                xref = image[0]
+                try:
+                    base = doc.extract_image(xref)
+                except Exception:  # noqa: BLE001 - skip anything unreadable
+                    continue
+                if _content_density(base) < SCAN_MIN_CONTENT_BPP:
+                    continue
+                try:
+                    rects = page.get_image_rects(xref)
+                except Exception:  # noqa: BLE001 - unreadable image placement
+                    continue
+                for rect in rects:
+                    largest = max(largest, abs(rect.width * rect.height) / page_area)
+
+            cover = min(largest, 1.0)
+            reports.append(
+                {
+                    "page": page_number,
+                    "chars": chars,
+                    "image_cover": round(cover, 3),
+                    "is_scan": chars < SCAN_TEXT_FLOOR and cover >= SCAN_IMAGE_COVER,
+                }
+            )
+    return reports
 
 
 def _extract_pdf_pages(data: bytes) -> list[str]:
@@ -165,11 +251,42 @@ def extract_images(
 
     with fitz.open(stream=data, filetype="pdf") as doc:
         for page_number, page in enumerate(doc, start=1):
+            page_area = abs(page.rect.width * page.rect.height) or 1.0
+            page_chars = len(clean_text(page.get_text()).strip())
+
             for image in page.get_images(full=True):
                 xref = image[0]
                 try:
                     base = doc.extract_image(xref)
                 except Exception:  # noqa: BLE001 - skip anything unreadable
+                    continue
+
+                try:
+                    rects = page.get_image_rects(xref)
+                except Exception:  # noqa: BLE001
+                    rects = []
+
+                caption = None
+                for rect in rects:
+                    caption = _find_caption(page, rect)
+                    if caption:
+                        break
+
+                # The scan of a page is not a figure on it: without this a
+                # scanned document fills figure search with whole-page
+                # images that illustrate nothing. A caption vetoes that,
+                # because a captioned image is a figure by definition - a
+                # full-page map plate covers its page and carries almost no
+                # other text, and would otherwise be thrown away.
+                if (
+                    caption is None
+                    and page_chars < SCAN_TEXT_FLOOR
+                    and _content_density(base) >= SCAN_MIN_CONTENT_BPP
+                    and any(
+                        abs(r.width * r.height) / page_area >= SCAN_IMAGE_COVER
+                        for r in rects
+                    )
+                ):
                     continue
 
                 digest = hashlib.sha256(base["image"]).hexdigest()
@@ -183,16 +300,8 @@ def extract_images(
                         "height": base["height"],
                     }
 
-                if (digest, page_number) not in captions:
-                    try:
-                        rects = page.get_image_rects(xref)
-                    except Exception:  # noqa: BLE001
-                        rects = []
-                    for rect in rects:
-                        caption = _find_caption(page, rect)
-                        if caption:
-                            captions[(digest, page_number)] = caption
-                            break
+                if caption and (digest, page_number) not in captions:
+                    captions[(digest, page_number)] = caption
 
         results = []
         for digest, pages in occurrences.items():

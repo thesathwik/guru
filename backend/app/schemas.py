@@ -14,6 +14,8 @@ class MaterialOut(BaseModel):
     error_message: str | None = None
     chunk_count: int | None = None
     char_count: int | None = None
+    page_count: int | None = None
+    scanned_page_count: int | None = None
     uploaded_at: datetime
     processed_at: datetime | None = None
 

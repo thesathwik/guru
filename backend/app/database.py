@@ -55,8 +55,11 @@ def get_db():
 # existing one, so without this an older database keeps running against a
 # table that's missing the new column.
 _ADDED_COLUMNS = {
-    "chunks": {"page": "INTEGER"},
+    # Existing rows predate provenance tracking and were all extracted
+    # natively, so the default backfills them correctly.
+    "chunks": {"page": "INTEGER", "source": "VARCHAR DEFAULT 'native'"},
     "material_images": {"caption": "TEXT", "caption_embedding": "TEXT"},
+    "materials": {"page_count": "INTEGER", "scanned_page_count": "INTEGER"},
 }
 
 

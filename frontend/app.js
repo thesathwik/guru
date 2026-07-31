@@ -91,10 +91,19 @@ async function refreshSubjectDetail() {
 function renderMaterials(materials) {
   materialsBodyEl.innerHTML = "";
   for (const m of materials) {
+    // A file can index successfully and still have scanned pages whose
+    // content never made it in. That is invisible from the chunk count
+    // alone, so call it out on the row.
+    const scanned = m.scanned_page_count || 0;
+    const scanNote =
+      scanned > 0 && m.status === "processed"
+        ? `<span class="scan-warning" title="These pages are images with no text layer, so their content is not searchable yet.">${scanned} of ${m.page_count} pages scanned &mdash; not indexed</span>`
+        : "";
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(m.filename)}</td>
-      <td><span class="status status-${m.status}">${m.status}${m.status === "error" ? ": " + escapeHtml(m.error_message || "") : ""}</span></td>
+      <td><span class="status status-${m.status}">${m.status}${m.status === "error" ? ": " + escapeHtml(m.error_message || "") : ""}</span>${scanNote}</td>
       <td>${m.chunk_count ?? "-"}</td>
       <td>${new Date(m.uploaded_at).toLocaleString()}</td>
       <td><span class="delete-link" data-id="${m.id}">delete</span></td>

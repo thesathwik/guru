@@ -846,3 +846,16 @@ button:disabled {
   font-size: 12px;
   color: #888;
 }
+
+.scan-warning {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: help;
+}

@@ -42,6 +42,11 @@ class Material(Base):
     error_message = Column(Text, nullable=True)
     chunk_count = Column(Integer, nullable=True)
     char_count = Column(Integer, nullable=True)
+    page_count = Column(Integer, nullable=True)
+    # Pages that carry no extractable text and are mostly one image - i.e.
+    # scanned or photographed. Their content is invisible to retrieval
+    # until OCR runs, so this is surfaced rather than left implicit.
+    scanned_page_count = Column(Integer, nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
@@ -68,6 +73,13 @@ class Chunk(Base):
     # Source page (1-based) this chunk's text starts on, used to pull in
     # figures/diagrams from the same page when the chunk is retrieved.
     page = Column(Integer, nullable=True)
+    # How the text was obtained: "native" (extracted from the file) or
+    # "ocr" (recognised from an image of the page). Retrieval weights BM25
+    # above dense matching, which relies on exact terms - and those are
+    # exactly what OCR gets wrong, so the two need telling apart. Recorded
+    # from the start because backfilling it would mean reprocessing every
+    # material again.
+    source = Column(String, nullable=False, default="native")
 
     material = relationship("Material", back_populates="chunks")
 
