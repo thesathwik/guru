@@ -63,6 +63,8 @@ _ADDED_COLUMNS = {
         "page_count": "INTEGER",
         "scanned_page_count": "INTEGER",
         "ocr_page_count": "INTEGER",
+        "processing_started_at": "TIMESTAMP",
+        "attempts": "INTEGER DEFAULT 0",
     },
 }
 

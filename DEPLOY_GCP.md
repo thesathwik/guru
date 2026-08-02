@@ -95,10 +95,11 @@ done
 
 ## 4. Deploy
 
-`--no-cpu-throttling` matters: material processing (text extraction,
-chunking, embedding) runs as a background task *after* the upload
-response is returned. With Cloud Run's default throttling the CPU is cut
-to near zero at that point, and uploads sit in `processing` forever.
+Indexing itself now happens in a separate job (see 4c), so the service
+only stores the upload and queues it. `--no-cpu-throttling` still matters
+where no worker job is configured, because processing then falls back to
+running after the response is returned - and with Cloud Run's default
+throttling the CPU is cut to near zero at exactly that point.
 
 The DSN arrives via `--set-secrets` rather than `--set-env-vars`, so the
 database password is not readable in the service's configuration.
@@ -175,6 +176,51 @@ block are not sensitive.
 
 `--allow-unauthenticated` puts the app on the public internet with no
 login (it has none). See "Access" below.
+
+## 4c. The processing worker
+
+Uploading only stores the file and queues a row; a separate Cloud Run job
+does the indexing. Cloud Run reclaims idle instances and kills ones that
+exceed memory, so work running inside the request's own container was
+lost mid-flight, leaving materials stuck in "processing" with nothing to
+resume them. Text recognition made that expensive as well as annoying.
+
+```bash
+gcloud run jobs create guru-process \
+  --image=$REGION-docker.pkg.dev/$PROJECT/guru/guru:latest \
+  --region=$REGION --service-account=$SA \
+  --set-cloudsql-instances=$INSTANCE \
+  --memory=8Gi --cpu=2 --task-timeout=3600s --max-retries=0 \
+  --set-env-vars="GCS_BUCKET=$BUCKET,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION,MAX_CONCURRENT_PROCESSING=2,RERANKER_ENABLED=0" \
+  --set-secrets="DATABASE_URL=guru-database-url:latest" \
+  --command=python --args=-m,app.process_worker
+
+# The service starts the worker, so it needs to invoke that one job.
+gcloud run jobs add-iam-policy-binding guru-process --region=$REGION \
+  --member="serviceAccount:$SA" --role=roles/run.invoker
+
+# Then point the service at it.
+gcloud run services update guru --region=$REGION \
+  --update-env-vars=PROCESSING_JOB=guru-process,PROCESSING_JOB_REGION=$REGION
+```
+
+`RERANKER_ENABLED=0` on the worker: it never answers a question, so there
+is no reason for it to hold the cross-encoder resident. That is what buys
+back `MAX_CONCURRENT_PROCESSING=2` within the same memory.
+
+The queue is the `materials` table, not a broker, which keeps the failure
+modes small. A row is claimed with `FOR UPDATE SKIP LOCKED`, so the
+several executions an upload burst triggers never take the same material.
+Anything still claimed after `PROCESSING_STALE_MINUTES` is assumed
+abandoned and requeued, and a material that has burned
+`PROCESSING_MAX_ATTEMPTS` is failed rather than retried forever. Starting
+the job is fire-and-forget: if it fails the row stays queued and the next
+upload's worker drains it.
+
+Expect roughly two minutes between upload and processing starting - the
+worker is a cold start pulling a multi-gigabyte image. The worker lingers
+briefly after the queue empties, so a burst pays that once rather than per
+file.
 
 ## 5. Move the existing materials across
 

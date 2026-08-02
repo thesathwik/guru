@@ -10,6 +10,7 @@ env:
   PROJECT_NUMBER: "981400413289"
   REGION: us-central1
   SERVICE: guru
+  WORKER_JOB: guru-process
   # Artifact Registry repo "guru", image "guru".
   IMAGE: us-central1-docker.pkg.dev/bicycle-503702/guru/guru
   RUNTIME_SA: guru-app@bicycle-503702.iam.gserviceaccount.com
@@ -73,8 +74,16 @@ jobs:
             --concurrency=20 \
             --min-instances=0 --max-instances=4 \
             --allow-unauthenticated \
-            --set-env-vars="GCS_BUCKET=${{ env.BUCKET }},GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},MAX_CONCURRENT_PROCESSING=1,RERANKER_ENABLED=1" \
+            --set-env-vars="GCS_BUCKET=${{ env.BUCKET }},GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},MAX_CONCURRENT_PROCESSING=1,RERANKER_ENABLED=1,PROCESSING_JOB=${{ env.WORKER_JOB }},PROCESSING_JOB_REGION=${{ env.REGION }}" \
             --set-secrets="DATABASE_URL=guru-database-url:latest"
+
+      # The worker runs the same image, so it has to move with the service
+      # or it would keep indexing with whatever code it was created with.
+      - name: Update processing worker job
+        run: |
+          gcloud run jobs update ${{ env.WORKER_JOB }} \
+            --image=${{ env.IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }}
 
       - name: Show service URL
         run: |

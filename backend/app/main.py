@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import embeddings, models, ocr, preprocessing, schemas, testgen, tutor
+from . import embeddings, models, ocr, preprocessing, schemas, testgen, tutor, workqueue
 from .database import Base, SessionLocal, apply_migrations, engine, get_db
 from .storage import get_storage
 from .utils import slugify
@@ -293,13 +293,23 @@ async def upload_material(
         subject_id=subject.id,
         filename=file.filename,
         raw_path=raw_path,
-        status="uploaded",
+        status="queued",
     )
     db.add(material)
     db.commit()
     db.refresh(material)
 
-    background_tasks.add_task(process_material, material.id)
+    if workqueue.JOB_NAME:
+        # Fire and forget. If the job cannot be started the row simply
+        # stays queued: the next upload's worker drains it, so a transient
+        # failure here costs a delay rather than the material. Falling
+        # back to in-process work instead would risk two workers on the
+        # same row and reintroduce exactly the fragility this replaces.
+        workqueue.trigger()
+    else:
+        # No worker job configured - local dev and docker compose - so do
+        # it here, as this always used to.
+        background_tasks.add_task(process_material, material.id)
 
     return material
 

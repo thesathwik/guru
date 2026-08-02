@@ -38,7 +38,16 @@ class Material(Base):
     filename = Column(String, nullable=False)
     raw_path = Column(String, nullable=False)
     processed_path = Column(String, nullable=True)
-    status = Column(String, default="uploaded")  # uploaded, processing, processed, error
+    # uploaded, queued, processing, processed, error
+    status = Column(String, default="uploaded")
+    # When the current processing attempt started. A worker that dies
+    # leaves the row in "processing" forever otherwise; this is what lets
+    # a later run tell "in progress" from "abandoned".
+    processing_started_at = Column(DateTime, nullable=True)
+    # Attempts so far, so a material that kills every worker it touches
+    # (out of memory, a malformed file) fails for good instead of being
+    # retried until the end of time.
+    attempts = Column(Integer, nullable=False, default=0)
     error_message = Column(Text, nullable=True)
     chunk_count = Column(Integer, nullable=True)
     char_count = Column(Integer, nullable=True)
