@@ -5,10 +5,10 @@ uploaded files must live in GCS (they already can), and the database has
 to be managed rather than a SQLite file on disk.
 
 The live deployment of this app runs in project `bicycle-503702`
-(us-central1) at <https://guru-981400413289.us-central1.run.app>. Pushes
-to `main` redeploy it via `.github/workflows/deploy.yml`; the steps below
-are what that pipeline was built on, and what to repeat for a fresh
-project.
+(us-central1) at <https://guru-981400413289.us-central1.run.app>. It is
+deployed by `cloudbuild.yaml` (see "4b"), which is also what a push
+trigger or the GitHub workflow runs; the steps below are what that was
+built on, and what to repeat for a fresh project.
 
 Set these once:
 
@@ -129,11 +129,66 @@ gcloud run deploy guru \
 
 ## 4b. The deploy pipeline
 
-`.github/workflows/deploy.yml` builds the image and deploys it on every
-push to `main`. It authenticates with Workload Identity Federation, so
-there is no service account key in the repository and nothing to rotate:
-GitHub mints an OIDC token, GCP exchanges it for short-lived credentials,
-and the trust is scoped to this one repository.
+`cloudbuild.yaml` is the deploy: it builds the image with the reranker
+baked in, deploys the service with every flag it needs, and updates the
+worker job to the same image. Run it by hand any time:
+
+```bash
+gcloud builds submit --config cloudbuild.yaml .
+```
+
+That single definition is the point. The flags have grown non-obvious -
+8Gi against MAX_CONCURRENT_PROCESSING=1 because the reranker stays
+resident, --no-cpu-throttling, the worker job moving in lockstep - and
+getting one wrong degrades the app quietly rather than failing. Anything
+that deploys should go through this file rather than restate it.
+
+Cloud Build runs the default machine type deliberately: it is the
+cheapest and the one the free tier covers. A build takes about five
+minutes, against two on a larger machine, which is the right trade for
+something that runs on a push.
+
+The build runs as the Compute Engine default service account, so it needs
+to be able to deploy:
+
+```bash
+export BUILD_SA=$(gcloud projects describe $PROJECT --format='value(projectNumber)')-compute@developer.gserviceaccount.com
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member="serviceAccount:$BUILD_SA" --role=roles/run.admin
+gcloud iam service-accounts add-iam-policy-binding $SA \
+  --member="serviceAccount:$BUILD_SA" --role=roles/iam.serviceAccountUser
+```
+
+### On every push
+
+Connecting the repository is a one-time browser step, because Cloud Build
+needs authorising against GitHub:
+
+    console.cloud.google.com/cloud-build/triggers -> Connect Repository
+
+Then:
+
+```bash
+gcloud builds triggers create github \
+  --name=guru-deploy \
+  --region=$REGION \
+  --repo-owner=your-org --repo-name=your-repo \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.yaml \
+  --substitutions=_TAG='$SHORT_SHA'
+```
+
+This is independent of GitHub Actions, and therefore of GitHub billing -
+it is a webhook, not a runner.
+
+### GitHub Actions
+
+`.github/workflows/deploy.yml` does the same thing through Workload
+Identity Federation, so there is no service account key in the repository
+and nothing to rotate: GitHub mints an OIDC token, GCP exchanges it for
+short-lived credentials, and the trust is scoped to this one repository.
+It shells out to the same `cloudbuild.yaml` rather than restating the
+deploy.
 
 ```bash
 export PROJNUM=$(gcloud projects describe $PROJECT --format='value(projectNumber)')
@@ -158,12 +213,11 @@ build pipeline does not hand over the app's data access:
 gcloud iam service-accounts create guru-deployer --display-name="Guru CI deployer"
 export DEPLOYER=guru-deployer@${PROJECT}.iam.gserviceaccount.com
 
-for ROLE in roles/run.admin roles/artifactregistry.writer; do
+for ROLE in roles/cloudbuild.builds.editor roles/storage.objectAdmin; do
   gcloud projects add-iam-policy-binding $PROJECT \
     --member="serviceAccount:$DEPLOYER" --role=$ROLE
 done
-# ...and permission to set guru-app as the service's runtime identity.
-gcloud iam service-accounts add-iam-policy-binding $SA \
+gcloud iam service-accounts add-iam-policy-binding $BUILD_SA \
   --member="serviceAccount:$DEPLOYER" --role=roles/iam.serviceAccountUser
 
 gcloud iam service-accounts add-iam-policy-binding $DEPLOYER \
@@ -171,8 +225,8 @@ gcloud iam service-accounts add-iam-policy-binding $DEPLOYER \
   --member="principalSet://iam.googleapis.com/projects/${PROJNUM}/locations/global/workloadIdentityPools/github/attribute.repository/${REPO}"
 ```
 
-No GitHub secrets are needed; the identifiers in the workflow's `env`
-block are not sensitive.
+No GitHub secrets are needed; the identifiers in the workflow are not
+sensitive.
 
 `--allow-unauthenticated` puts the app on the public internet with no
 login (it has none). See "Access" below.

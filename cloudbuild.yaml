@@ -1,0 +1,90 @@
+# The whole deploy in one command, so it cannot drift from what the flags
+# are supposed to be:
+#
+#   gcloud builds submit --config cloudbuild.yaml .
+#
+# Cloud Build runs in GCP, which is already billed, and this is the same
+# path every image has been built through - a trigger on push to main just
+# runs it automatically (see DEPLOY_GCP.md, "4b").
+#
+# _TAG defaults to "manual" so a hand-run build is distinguishable; the
+# trigger passes the commit SHA.
+substitutions:
+  _TAG: manual
+  _REGION: us-central1
+  _SERVICE: guru
+  _WORKER_JOB: guru-process
+  _RUNTIME_SA: guru-app@bicycle-503702.iam.gserviceaccount.com
+  _CLOUDSQL: bicycle-503702:us-central1:guru-pg
+  _BUCKET: bicycle-503702-guru-materials
+
+steps:
+  # The cross-encoder has to be baked in: without it figure selection falls
+  # back to a relative rule too weak to separate near-tied captions, and no
+  # figure is shown at all.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg=INCLUDE_RERANKER=1
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru:${_TAG}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, "${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru"]
+
+  # Every flag here is load-bearing. --no-cpu-throttling because indexing
+  # continues after the response when no worker job is set; 8Gi with
+  # MAX_CONCURRENT_PROCESSING=1 because the reranker stays resident once a
+  # chat loads it and competes with processing for the same limit.
+  - id: deploy-service
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru:${_TAG}
+      - --region=${_REGION}
+      - --service-account=${_RUNTIME_SA}
+      - --add-cloudsql-instances=${_CLOUDSQL}
+      - --memory=8Gi
+      - --cpu=2
+      - --no-cpu-throttling
+      - --timeout=600
+      - --concurrency=20
+      - --min-instances=0
+      - --max-instances=4
+      - --allow-unauthenticated
+      - --set-env-vars=GCS_BUCKET=${_BUCKET},GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION},MAX_CONCURRENT_PROCESSING=1,RERANKER_ENABLED=1,PROCESSING_JOB=${_WORKER_JOB},PROCESSING_JOB_REGION=${_REGION}
+      - --set-secrets=DATABASE_URL=guru-database-url:latest
+
+  # The worker runs the same image and has to move with the service, or it
+  # keeps indexing with whatever code it was created with - a failure that
+  # produces wrong results rather than an error.
+  - id: update-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - ${_WORKER_JOB}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru:${_TAG}
+      - --region=${_REGION}
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/guru/guru:latest
+
+options:
+  # Left at the default machine type on purpose: it is the cheapest and
+  # the one the free tier covers. A bigger machine builds faster and costs
+  # more, which is the wrong trade for a deploy that runs on a push.
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s
