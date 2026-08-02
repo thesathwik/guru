@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import embeddings, models, preprocessing, schemas, testgen, tutor
+from . import embeddings, models, ocr, preprocessing, schemas, testgen, tutor
 from .database import Base, SessionLocal, apply_migrations, engine, get_db
 from .storage import get_storage
 from .utils import slugify
@@ -119,6 +119,18 @@ def _process_material(material_id: int) -> None:
             material.page_count = len(reports)
             material.scanned_page_count = len(scanned)
 
+            # Scanned pages carry no text layer, so read them off the page
+            # image instead. Only those pages: the rest already have text
+            # that is exact and free.
+            recognised: dict[int, str] = {}
+            if scanned and ocr.ENABLED:
+                recognised = ocr.recognise_pages(
+                    storage, subject.slug, raw_bytes, scanned
+                )
+                for page_number, page_text in recognised.items():
+                    pages[page_number - 1] = page_text
+            material.ocr_page_count = len(recognised)
+
             text, chunks = preprocessing.chunk_pages(pages)
             chunk_texts = [chunk["text"] for chunk in chunks]
 
@@ -129,10 +141,15 @@ def _process_material(material_id: int) -> None:
             # useless.
             if not chunk_texts:
                 if scanned:
+                    detail = (
+                        "text recognition read nothing from them"
+                        if ocr.ENABLED
+                        else "they have no readable text layer"
+                    )
                     raise ProcessingError(
                         f"This looks scanned or photographed: {len(scanned)} of "
-                        f"{len(reports)} pages are images with no readable text "
-                        "layer, so nothing could be indexed."
+                        f"{len(reports)} pages are images and {detail}, so nothing "
+                        "could be indexed."
                     )
                 raise ProcessingError("No readable text could be extracted from this file.")
 
@@ -158,10 +175,10 @@ def _process_material(material_id: int) -> None:
                         text=chunk["text"],
                         embedding=json.dumps(vector),
                         page=chunk["page"],
-                        # Everything here came out of the file itself. OCR'd
-                        # text will arrive tagged differently so retrieval
-                        # can treat it accordingly.
-                        source="native",
+                        # A chunk spanning a page break is attributed to the
+                        # page it starts on, which is the same page its
+                        # citation points at.
+                        source="ocr" if chunk["page"] in recognised else "native",
                     )
                 )
 

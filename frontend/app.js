@@ -95,10 +95,14 @@ function renderMaterials(materials) {
     // content never made it in. That is invisible from the chunk count
     // alone, so call it out on the row.
     const scanned = m.scanned_page_count || 0;
-    const scanNote =
-      scanned > 0 && m.status === "processed"
-        ? `<span class="scan-warning" title="These pages are images with no text layer, so their content is not searchable yet.">${scanned} of ${m.page_count} pages scanned &mdash; not indexed</span>`
-        : "";
+    const recognised = m.ocr_page_count || 0;
+    let scanNote = "";
+    if (scanned > 0 && m.status === "processed") {
+      scanNote =
+        recognised > 0
+          ? `<span class="scan-note" title="These pages had no text layer, so their text was read from the page image. Unreadable handwriting is marked [illegible] rather than guessed.">${recognised} of ${scanned} scanned pages read by OCR</span>`
+          : `<span class="scan-warning" title="These pages are images with no text layer, so their content is not searchable.">${scanned} of ${m.page_count} pages scanned &mdash; not indexed</span>`;
+    }
 
     const tr = document.createElement("tr");
     tr.innerHTML = `

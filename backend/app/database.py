@@ -59,7 +59,11 @@ _ADDED_COLUMNS = {
     # natively, so the default backfills them correctly.
     "chunks": {"page": "INTEGER", "source": "VARCHAR DEFAULT 'native'"},
     "material_images": {"caption": "TEXT", "caption_embedding": "TEXT"},
-    "materials": {"page_count": "INTEGER", "scanned_page_count": "INTEGER"},
+    "materials": {
+        "page_count": "INTEGER",
+        "scanned_page_count": "INTEGER",
+        "ocr_page_count": "INTEGER",
+    },
 }
 
 

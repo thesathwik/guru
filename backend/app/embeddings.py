@@ -25,6 +25,18 @@ SPARSE_WEIGHT = float(os.environ.get("RETRIEVAL_SPARSE_WEIGHT", "2.0"))
 # a lexical match at all.
 SPARSE_MIN_RATIO = float(os.environ.get("RETRIEVAL_SPARSE_MIN_RATIO", "0.1"))
 
+# Recognised text competes at a disadvantage that has nothing to do with
+# relevance. BM25 carries twice the weight of dense matching here because
+# it nails exact terms - and misreading one character of a rare word is
+# exactly how recognition fails, so an OCR'd passage simply never earns
+# the lexical vote its native neighbours get. This lifts its dense vote to
+# compensate rather than penalising anything: a subject with no recognised
+# text is unaffected.
+#
+# The value is a starting point, not a measured optimum - it wants tuning
+# against real recognised material.
+OCR_DENSE_BOOST = float(os.environ.get("RETRIEVAL_OCR_DENSE_BOOST", "1.5"))
+
 
 
 # ONNX Runtime defaults to a worker thread per core, which saturates a
@@ -122,6 +134,7 @@ def reciprocal_rank_fusion(
     rankings: list[list[int]],
     k: int = RRF_K,
     weights: list[float] | None = None,
+    item_weights: list[dict[int, float] | None] | None = None,
 ) -> dict[int, float]:
     """Reciprocal Rank Fusion: combine rankings by position rather than
     by score. Dense cosine and BM25 produce scores on incompatible
@@ -133,12 +146,20 @@ def reciprocal_rank_fusion(
     paraphrase model and near noise on exact-term questions - so BM25 is
     weighted higher and k is lower, letting a strong lexical hit pull a
     passage up rather than being averaged away by a weak dense rank.
+
+    `item_weights` scales individual entries within a ranking, for when a
+    ranker is more or less trustworthy about particular documents rather
+    than in general - see OCR_DENSE_BOOST.
     """
     fused: dict[int, float] = {}
     for index, ranking in enumerate(rankings):
         weight = weights[index] if weights and index < len(weights) else 1.0
+        per_item = item_weights[index] if item_weights and index < len(item_weights) else None
         for position, identifier in enumerate(ranking):
-            fused[identifier] = fused.get(identifier, 0.0) + weight / (k + position + 1)
+            scale = per_item.get(identifier, 1.0) if per_item else 1.0
+            fused[identifier] = fused.get(identifier, 0.0) + (weight * scale) / (
+                k + position + 1
+            )
     return fused
 
 
@@ -256,6 +277,12 @@ def search_chunks(
     by_id = {row.id: row for row in rows}
     rankings = [sorted(dense_scores, key=dense_scores.get, reverse=True)]
     weights = [DENSE_WEIGHT]
+    # Empty for any subject without recognised text, so this is a no-op
+    # everywhere it does not apply.
+    ocr_boost = {
+        row.id: OCR_DENSE_BOOST for row in rows if row.source == "ocr"
+    }
+    item_weights: list[dict[int, float] | None] = [ocr_boost or None]
     if sparse_scores:
         # Only let BM25 vote for chunks it meaningfully matched. Scoring
         # above zero is not enough: a passage sharing nothing but "is"
@@ -270,8 +297,9 @@ def search_chunks(
         if matched:
             rankings.append(matched)
             weights.append(SPARSE_WEIGHT)
+            item_weights.append(None)
 
-    fused = reciprocal_rank_fusion(rankings, weights=weights)
+    fused = reciprocal_rank_fusion(rankings, weights=weights, item_weights=item_weights)
     order = sorted(fused, key=fused.get, reverse=True)
 
     shortlist = order[: max(reranker.CANDIDATES, top_k)]

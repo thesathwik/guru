@@ -47,6 +47,9 @@ class Material(Base):
     # scanned or photographed. Their content is invisible to retrieval
     # until OCR runs, so this is surfaced rather than left implicit.
     scanned_page_count = Column(Integer, nullable=True)
+    # How many of those scanned pages text recognition actually recovered.
+    # Below scanned_page_count when a page was blank or unreadable.
+    ocr_page_count = Column(Integer, nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
