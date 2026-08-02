@@ -166,17 +166,29 @@ needs authorising against GitHub:
 
     console.cloud.google.com/cloud-build/triggers -> Connect Repository
 
-Then:
+The connection and the trigger must share a region, and the GitHub App
+connection lives in `global`. Create the trigger there too:
 
 ```bash
 gcloud builds triggers create github \
   --name=guru-deploy \
-  --region=$REGION \
+  --region=global \
   --repo-owner=your-org --repo-name=your-repo \
   --branch-pattern='^main$' \
   --build-config=cloudbuild.yaml \
   --substitutions=_TAG='$SHORT_SHA'
 ```
+
+Two settings the console gets wrong if you let it: it defaults to
+autodetecting the build config, which is ambiguous when the repository
+root holds both a Dockerfile and a cloudbuild.yaml, and it leaves the
+substitutions empty so every deploy overwrites the same image tag. Both
+are worth setting explicitly.
+
+The trigger runs as `guru-deployer`, which needs `roles/logging.logWriter`
+on top of its deploy permissions - a build using a user-managed service
+account cannot write its own logs without it, and fails before running a
+step.
 
 This is independent of GitHub Actions, and therefore of GitHub billing -
 it is a webhook, not a runner.
