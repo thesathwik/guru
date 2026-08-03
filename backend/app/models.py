@@ -16,6 +16,62 @@ from sqlalchemy.orm import relationship
 from .database import Base
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    # Identity Platform's subject id. Keyed on this rather than email
+    # because an email can be changed or reassigned; the uid cannot.
+    auth_uid = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, nullable=True)
+    display_name = Column(String, nullable=True)
+    # Who may add to the shared library. Seeded from ADMIN_EMAILS.
+    is_admin = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, nullable=True)
+
+    profile = relationship(
+        "LearnerProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class LearnerProfile(Base):
+    """What the student tells us about themselves, fed to the tutor.
+
+    Everything here is stated by the student rather than inferred, so it
+    is correctable and carries no risk of the tutor acting on a wrong
+    guess about them. Inferred signals - weak topics from test results,
+    recurring themes from questions - belong alongside this later, kept
+    separate precisely so the two can be told apart.
+    """
+
+    __tablename__ = "learner_profiles"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+
+    grade = Column(String, nullable=True)  # "Class 9"
+    board = Column(String, nullable=True)  # "CBSE", "ICSE", "State board"
+    language = Column(String, nullable=True)  # preferred language for answers
+    goals = Column(Text, nullable=True)  # "board exams in March"
+
+    # How to teach this particular student. The reason a tutor beats a
+    # search box: the same fact explained the way this person actually
+    # follows it.
+    learning_style = Column(Text, nullable=True)
+    analogies = Column(Text, nullable=True)  # subjects whose examples land
+    strengths = Column(Text, nullable=True)
+    weaknesses = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)  # anything else worth remembering
+
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="profile")
+
+
 class Subject(Base):
     __tablename__ = "subjects"
 
@@ -23,6 +79,10 @@ class Subject(Base):
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # NULL means the shared library: visible to everyone. Set means a
+    # personal upload, visible only to that user. Existing rows are all
+    # NULL, so the library everyone already sees stays shared.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     materials = relationship(
         "Material", back_populates="subject", cascade="all, delete-orphan"
@@ -35,6 +95,10 @@ class Material(Base):
 
     id = Column(Integer, primary_key=True)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
+    # NULL means the shared library: visible to everyone. Set means a
+    # personal upload, visible only to that user. Existing rows are all
+    # NULL, so the library everyone already sees stays shared.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     filename = Column(String, nullable=False)
     raw_path = Column(String, nullable=False)
     processed_path = Column(String, nullable=True)
@@ -79,6 +143,9 @@ class Chunk(Base):
     # single shared embeddings table.
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    # Denormalised from material.owner_id for the same reason subject_id is:
+    # retrieval filters on it directly, on every query, without a join.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     chunk_index = Column(Integer, nullable=False)
     text = Column(Text, nullable=False)
     embedding = Column(Text, nullable=False)  # JSON-encoded list[float]
@@ -102,6 +169,7 @@ class MaterialImage(Base):
     id = Column(Integer, primary_key=True)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     page = Column(Integer, nullable=False)
     path = Column(String, nullable=False)
     content_type = Column(String, nullable=False)
@@ -136,6 +204,8 @@ class Test(Base):
 
     id = Column(Integer, primary_key=True)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
+    # NULL only for tests generated before sign-in existed.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     title = Column(String, nullable=False)
     question_count = Column(Integer, nullable=False)
     # Minutes, or NULL for an untimed test. Enforced in the browser only -
@@ -186,6 +256,7 @@ class TestAttempt(Base):
 
     id = Column(Integer, primary_key=True)
     test_id = Column(Integer, ForeignKey("tests.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow)
     submitted_at = Column(DateTime, nullable=True)
     score_points = Column(Float, nullable=True)

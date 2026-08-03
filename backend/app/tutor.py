@@ -20,10 +20,45 @@ Answer the student's question using the reference material below, which comes fr
 their own {subject_name} materials. If the material doesn't contain enough
 information to answer, say so honestly rather than guessing or using outside
 knowledge. Keep answers clear and appropriately detailed for a student.
-
+{learner}
 Reference material:
 {context}
 """
+
+
+# What the student told us about themselves, rendered for the prompt.
+# Framed as how to explain rather than what to say: the grounding rule
+# above still governs the facts, and a learner profile must never become
+# licence to answer from outside the material.
+LEARNER_TEMPLATE = """
+About this particular student - use it to decide how to explain, never to
+change what the material says:
+{lines}
+If something here conflicts with the reference material, the material wins.
+"""
+
+
+def _learner_context(profile) -> str:
+    """Renders a LearnerProfile into the system prompt, or nothing at all
+    if the student has not filled anything in."""
+    if profile is None:
+        return ""
+
+    fields = [
+        ("Class/grade", profile.grade),
+        ("Board/curriculum", profile.board),
+        ("Answer in this language where possible", profile.language),
+        ("What they are working towards", profile.goals),
+        ("How they learn best", profile.learning_style),
+        ("Analogies and examples that land with them", profile.analogies),
+        ("They are strong at", profile.strengths),
+        ("They find these hard, so go slower there", profile.weaknesses),
+        ("Other things to keep in mind", profile.notes),
+    ]
+    lines = [f"- {label}: {value.strip()}" for label, value in fields if value and value.strip()]
+    if not lines:
+        return ""
+    return LEARNER_TEMPLATE.format(lines="\n".join(lines))
 
 
 class TutorNotConfigured(Exception):
@@ -151,7 +186,8 @@ MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
 
 
 def score_images(
-    db, subject_id: int, query_vector: list[float], query: str = ""
+    db, subject_id: int, query_vector: list[float], query: str = "",
+    user_id: int | None = None,
 ) -> tuple[list[tuple[float, object]], bool]:
     """Ranks a subject's captioned figures against the question, best
     first, using the same two-stage pipeline as text retrieval: dense +
@@ -177,6 +213,11 @@ def score_images(
         .filter(
             models.MaterialImage.subject_id == subject_id,
             models.MaterialImage.caption_embedding.isnot(None),
+            # Shared figures plus this user's own - defaulting to shared
+            # only, so a caller that forgets shows too few rather than
+            # someone else's material.
+            (models.MaterialImage.owner_id.is_(None))
+            | (models.MaterialImage.owner_id == user_id),
         )
         .all()
     )
@@ -231,7 +272,10 @@ def score_images(
     return [(fused[i], by_id[i]) for i in shortlist], False
 
 
-def _relevant_images(db, subject_id: int, query_vector: list[float], query: str = "") -> list[dict]:
+def _relevant_images(
+    db, subject_id: int, query_vector: list[float], query: str = "",
+    user_id: int | None = None,
+) -> list[dict]:
     """Picks the figures whose captions genuinely match the question.
 
     An earlier version used page proximity - show every figure sharing a
@@ -254,7 +298,7 @@ def _relevant_images(db, subject_id: int, query_vector: list[float], query: str 
     """
     import statistics
 
-    scored, reranked = score_images(db, subject_id, query_vector, query)
+    scored, reranked = score_images(db, subject_id, query_vector, query, user_id)
     if not scored:
         return []
 
@@ -301,18 +345,23 @@ def _relevant_images(db, subject_id: int, query_vector: list[float], query: str 
 
 
 def answer_question(
-    db, subject, question: str, history: list[dict] | None = None, top_k: int = 5
+    db, subject, question: str, history: list[dict] | None = None, top_k: int = 5,
+    user=None,
 ) -> dict:
+    user_id = user.id if user is not None else None
     query_vector = embeddings.embed_query(question)
     matches = embeddings.search_chunks(
-        db, subject.id, question, top_k=top_k, query_vector=query_vector
+        db, subject.id, question, top_k=top_k, query_vector=query_vector,
+        user_id=user_id,
     )
 
     messages = [
         {
             "role": "system",
             "content": SYSTEM_PROMPT_TEMPLATE.format(
-                subject_name=subject.name, context=_build_context(matches)
+                subject_name=subject.name,
+                context=_build_context(matches),
+                learner=_learner_context(getattr(user, "profile", None)),
             ),
         }
     ]
@@ -339,5 +388,5 @@ def answer_question(
             }
             for m in matches
         ],
-        "images": _relevant_images(db, subject.id, query_vector, question),
+        "images": _relevant_images(db, subject.id, query_vector, question, user_id),
     }

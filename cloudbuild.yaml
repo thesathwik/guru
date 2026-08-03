@@ -17,6 +17,11 @@ substitutions:
   _RUNTIME_SA: guru-app@bicycle-503702.iam.gserviceaccount.com
   _CLOUDSQL: bicycle-503702:us-central1:guru-pg
   _BUCKET: bicycle-503702-guru-materials
+  # Identity Platform's web API key is a public project identifier, not a
+  # secret: it only names the project. Access is governed by the
+  # authorised-domain list and by the server verifying every token.
+  _IDENTITY_API_KEY: AIzaSyBB7fcD1Dv_V__WoAW8xmYrjsdTdgmcTpk
+  _ADMIN_EMAILS: sathwikgdocs@gmail.com
 
 steps:
   # The cross-encoder has to be baked in: without it figure selection falls
@@ -60,7 +65,7 @@ steps:
       - --min-instances=0
       - --max-instances=4
       - --allow-unauthenticated
-      - --set-env-vars=GCS_BUCKET=${_BUCKET},GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION},MAX_CONCURRENT_PROCESSING=1,RERANKER_ENABLED=1,PROCESSING_JOB=${_WORKER_JOB},PROCESSING_JOB_REGION=${_REGION}
+      - --set-env-vars=GCS_BUCKET=${_BUCKET},GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=${_REGION},MAX_CONCURRENT_PROCESSING=1,RERANKER_ENABLED=1,PROCESSING_JOB=${_WORKER_JOB},PROCESSING_JOB_REGION=${_REGION},IDENTITY_API_KEY=${_IDENTITY_API_KEY},ADMIN_EMAILS=${_ADMIN_EMAILS}
       - --set-secrets=DATABASE_URL=guru-database-url:latest
 
   # The worker runs the same image and has to move with the service, or it

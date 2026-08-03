@@ -5,6 +5,9 @@ from pydantic import BaseModel
 
 class SubjectCreate(BaseModel):
     name: str
+    # Only honoured for an administrator; everyone else gets a subject of
+    # their own regardless of what they ask for.
+    shared: bool = False
 
 
 class MaterialOut(BaseModel):
@@ -30,6 +33,7 @@ class SubjectOut(BaseModel):
     slug: str
     created_at: datetime
     material_count: int = 0
+    shared: bool = False
 
     class Config:
         from_attributes = True
@@ -152,3 +156,33 @@ class AttemptOut(BaseModel):
     score_points: float | None = None
     max_points: int | None = None
     answers: list[GradedAnswerOut] = []
+
+
+class LearnerProfileIn(BaseModel):
+    grade: str | None = None
+    board: str | None = None
+    language: str | None = None
+    goals: str | None = None
+    learning_style: str | None = None
+    analogies: str | None = None
+    strengths: str | None = None
+    weaknesses: str | None = None
+    notes: str | None = None
+
+
+class LearnerProfileOut(LearnerProfileIn):
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class MeOut(BaseModel):
+    id: int
+    email: str | None = None
+    display_name: str | None = None
+    is_admin: bool = False
+    profile: LearnerProfileOut | None = None
+
+    class Config:
+        from_attributes = True

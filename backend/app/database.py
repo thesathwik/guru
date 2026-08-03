@@ -57,14 +57,28 @@ def get_db():
 _ADDED_COLUMNS = {
     # Existing rows predate provenance tracking and were all extracted
     # natively, so the default backfills them correctly.
-    "chunks": {"page": "INTEGER", "source": "VARCHAR DEFAULT 'native'"},
-    "material_images": {"caption": "TEXT", "caption_embedding": "TEXT"},
+    "chunks": {
+        "page": "INTEGER",
+        "source": "VARCHAR DEFAULT 'native'",
+        "owner_id": "INTEGER",
+    },
+    "material_images": {
+        "caption": "TEXT",
+        "caption_embedding": "TEXT",
+        "owner_id": "INTEGER",
+    },
+    # Ownership arrived after these tables existed. NULL is the shared
+    # library, so every existing row keeps being visible to everyone.
+    "subjects": {"owner_id": "INTEGER"},
+    "tests": {"owner_id": "INTEGER"},
+    "test_attempts": {"user_id": "INTEGER"},
     "materials": {
         "page_count": "INTEGER",
         "scanned_page_count": "INTEGER",
         "ocr_page_count": "INTEGER",
         "processing_started_at": "TIMESTAMP",
         "attempts": "INTEGER DEFAULT 0",
+        "owner_id": "INTEGER",
     },
 }
 

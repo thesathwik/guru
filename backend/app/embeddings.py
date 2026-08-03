@@ -226,6 +226,7 @@ def search_chunks(
     query: str,
     top_k: int = 5,
     query_vector: list[float] | None = None,
+    user_id: int | None = None,
 ) -> list[dict]:
     """Two-stage retrieval over a single subject's chunks.
 
@@ -247,11 +248,22 @@ def search_chunks(
 
     `query_vector` lets a caller that already embedded the query reuse
     it instead of paying for a second embedding pass.
+
+    `user_id` scopes retrieval to the shared library plus that user's own
+    material. It defaults to None - shared only - so a caller that forgets
+    to pass it retrieves too little rather than someone else's notes.
     """
     from . import models
     from . import reranker
 
-    rows = db.query(models.Chunk).filter_by(subject_id=subject_id).all()
+    query_set = db.query(models.Chunk).filter_by(subject_id=subject_id)
+    if user_id is None:
+        query_set = query_set.filter(models.Chunk.owner_id.is_(None))
+    else:
+        query_set = query_set.filter(
+            (models.Chunk.owner_id.is_(None)) | (models.Chunk.owner_id == user_id)
+        )
+    rows = query_set.all()
     if not rows:
         return []
 

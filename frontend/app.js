@@ -14,8 +14,16 @@ const chatMessagesEl = document.getElementById("chat-messages");
 // not persisted server-side yet.
 const chatHistoryBySubject = {};
 
-async function api(path, options) {
-  const res = await fetch(API + path, options);
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}), ...(await Auth.authHeaders()) };
+  const res = await fetch(API + path, { ...options, headers });
+  if (res.status === 401) {
+    // The session expired or was revoked. Drop back to the sign-in
+    // screen rather than showing a wall of failures.
+    Auth.signOut();
+    showSignIn();
+    throw new Error("Please sign in again");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `Request failed: ${res.status}`);
@@ -23,11 +31,35 @@ async function api(path, options) {
   return res.status === 204 ? null : res.json();
 }
 
+// A browser cannot put an Authorization header on <img src>, so figures
+// are fetched like any other request and handed to the tag as a blob.
+const blobUrlCache = new Map();
+
+async function authedImage(imgEl, url) {
+  if (blobUrlCache.has(url)) {
+    imgEl.src = blobUrlCache.get(url);
+    return;
+  }
+  try {
+    const res = await fetch(API + url.replace(/^\/api/, ""), {
+      headers: await Auth.authHeaders(),
+    });
+    if (!res.ok) return;
+    const objectUrl = URL.createObjectURL(await res.blob());
+    blobUrlCache.set(url, objectUrl);
+    imgEl.src = objectUrl;
+  } catch (_) {
+    // A figure that will not load is not worth breaking the answer over.
+  }
+}
+
 // fetch() can't report upload progress, so file uploads use XHR instead.
-function uploadFileWithProgress(path, file, onProgress) {
+async function uploadFileWithProgress(path, file, onProgress) {
+  const headers = await Auth.authHeaders();
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", API + path);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.addEventListener("progress", (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     });
@@ -250,7 +282,7 @@ function appendChatBubble(role, content, sources, images) {
       figure.className = "chat-figure";
 
       const el = document.createElement("img");
-      el.src = img.url;
+      authedImage(el, img.url);
       el.alt = `Figure from ${img.filename}, page ${img.page}`;
       el.loading = "lazy";
       el.addEventListener("click", () => openLightbox(img));
@@ -304,9 +336,11 @@ function openLightbox(img) {
   const overlay = document.createElement("div");
   overlay.className = "lightbox";
   overlay.innerHTML = `
-    <img src="${img.url}" alt="Figure from ${escapeHtml(img.filename)}, page ${img.page}" />
+    <img alt="Figure from ${escapeHtml(img.filename)}, page ${img.page}" />
     <div class="lightbox-caption">${escapeHtml(img.filename)} &middot; page ${img.page}</div>
   `;
+  // Cached from the thumbnail, so this is normally instant.
+  authedImage(overlay.querySelector("img"), img.url);
   overlay.addEventListener("click", () => overlay.remove());
   document.addEventListener(
     "keydown",
@@ -721,4 +755,142 @@ for (const button of tabButtons) {
   });
 }
 
-loadSubjects();
+// ------------------------------------------------------- Sign-in / profile
+
+const signInScreenEl = document.getElementById("signin-screen");
+const appLayoutEl = document.getElementById("app-layout");
+const profileViewEl = document.getElementById("profile-view");
+let signUpMode = false;
+let me = null;
+
+function showSignIn() {
+  signInScreenEl.hidden = false;
+  appLayoutEl.hidden = true;
+  if (pollTimer) clearInterval(pollTimer);
+}
+
+function showApp() {
+  signInScreenEl.hidden = true;
+  appLayoutEl.hidden = false;
+}
+
+function showProfile(open) {
+  profileViewEl.hidden = !open;
+  subjectViewEl.hidden = open || activeSubjectId === null;
+  emptyStateEl.hidden = open || activeSubjectId !== null;
+}
+
+function fillProfileForm(profile) {
+  const form = document.getElementById("profile-form");
+  for (const field of form.querySelectorAll("input[name], textarea[name]")) {
+    field.value = (profile && profile[field.name]) || "";
+  }
+}
+
+async function loadMe() {
+  me = await api("/me");
+  document.getElementById("account-name").textContent =
+    me.display_name || me.email || "Signed in";
+  document.getElementById("account-role").hidden = !me.is_admin;
+  fillProfileForm(me.profile);
+  return me;
+}
+
+document.getElementById("signin-toggle").addEventListener("click", (e) => {
+  e.preventDefault();
+  signUpMode = !signUpMode;
+  document.getElementById("signin-submit").textContent = signUpMode ? "Create account" : "Sign in";
+  document.getElementById("signin-switch-text").textContent = signUpMode
+    ? "Already have an account?"
+    : "New here?";
+  e.target.textContent = signUpMode ? "Sign in instead" : "Create an account";
+  document.getElementById("signin-password").autocomplete = signUpMode
+    ? "new-password"
+    : "current-password";
+  showError(document.getElementById("signin-error"), null);
+});
+
+document.getElementById("signin-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById("signin-error");
+  const button = document.getElementById("signin-submit");
+  const email = document.getElementById("signin-email").value.trim();
+  const password = document.getElementById("signin-password").value;
+
+  showError(errorEl, null);
+  button.disabled = true;
+  try {
+    if (signUpMode) await Auth.signUp(email, password);
+    else await Auth.signIn(email, password);
+    document.getElementById("signin-password").value = "";
+    await start();
+  } catch (err) {
+    showError(errorEl, err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.getElementById("sign-out").addEventListener("click", () => {
+  Auth.signOut();
+  activeSubjectId = null;
+  me = null;
+  // Blob URLs belong to the signed-out session; do not leave another
+  // account looking at the previous one's figures.
+  for (const url of blobUrlCache.values()) URL.revokeObjectURL(url);
+  blobUrlCache.clear();
+  showSignIn();
+});
+
+document.getElementById("open-profile").addEventListener("click", () => showProfile(true));
+document.getElementById("close-profile").addEventListener("click", () => showProfile(false));
+
+document.getElementById("profile-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById("profile-error");
+  const savedEl = document.getElementById("profile-saved");
+  const button = document.getElementById("profile-save");
+  showError(errorEl, null);
+  savedEl.hidden = true;
+  button.disabled = true;
+
+  const payload = {};
+  for (const field of e.target.querySelectorAll("input[name], textarea[name]")) {
+    payload[field.name] = field.value;
+  }
+
+  try {
+    const profile = await api("/me/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    fillProfileForm(profile);
+    savedEl.hidden = false;
+    setTimeout(() => (savedEl.hidden = true), 2500);
+  } catch (err) {
+    showError(errorEl, err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+async function start() {
+  showApp();
+  await loadMe();
+  await loadSubjects();
+}
+
+(async () => {
+  await Auth.init();
+  if (Auth.signedIn()) {
+    try {
+      await start();
+      return;
+    } catch (_) {
+      // A stored session that no longer works lands here; fall through
+      // to the sign-in screen rather than an empty app.
+    }
+  }
+  showSignIn();
+})();

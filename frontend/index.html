@@ -7,7 +7,24 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="layout">
+  <div id="signin-screen" class="signin-screen" hidden>
+    <div class="signin-card">
+      <h1>Guru</h1>
+      <p class="signin-tagline">Your own study material, tutored.</p>
+      <form id="signin-form">
+        <input id="signin-email" type="email" placeholder="Email" autocomplete="email" required />
+        <input id="signin-password" type="password" placeholder="Password" autocomplete="current-password" required minlength="6" />
+        <button type="submit" id="signin-submit">Sign in</button>
+      </form>
+      <p class="signin-switch">
+        <span id="signin-switch-text">New here?</span>
+        <a href="#" id="signin-toggle">Create an account</a>
+      </p>
+      <div id="signin-error" class="test-error" hidden></div>
+    </div>
+  </div>
+
+  <div class="layout" id="app-layout" hidden>
     <aside class="sidebar">
       <h1>Guru</h1>
       <form id="new-subject-form">
@@ -15,11 +32,52 @@
         <button type="submit">+ Add subject</button>
       </form>
       <ul id="subject-list" class="subject-list"></ul>
+
+      <div class="account-box">
+        <div class="account-who">
+          <span id="account-name"></span>
+          <span id="account-role" class="account-role" hidden>admin</span>
+        </div>
+        <div class="account-actions">
+          <button type="button" id="open-profile" class="secondary-button">My profile</button>
+          <button type="button" id="sign-out" class="secondary-button">Sign out</button>
+        </div>
+      </div>
     </aside>
 
     <main class="content">
       <div id="empty-state" class="empty-state">
         <p>Select a subject on the left, or create a new one to get started.</p>
+      </div>
+
+      <div id="profile-view" class="profile-view" hidden>
+        <div class="test-take-header">
+          <div>
+            <h2>My profile</h2>
+            <p class="hint">
+              The tutor uses this to decide <em>how</em> to explain things &mdash; it never
+              changes what your material says. Leave anything blank to keep it out.
+            </p>
+          </div>
+          <button type="button" id="close-profile" class="secondary-button">Done</button>
+        </div>
+
+        <form id="profile-form" class="profile-form">
+          <label>Class or grade<input name="grade" placeholder="e.g. Class 9" /></label>
+          <label>Board or curriculum<input name="board" placeholder="e.g. CBSE" /></label>
+          <label>Preferred language for answers<input name="language" placeholder="e.g. English, or Hindi where it helps" /></label>
+          <label>What are you working towards?<textarea name="goals" rows="2" placeholder="e.g. board exams in March"></textarea></label>
+          <label>How do you learn best?<textarea name="learning_style" rows="3" placeholder="e.g. show me a worked example first, then the rule"></textarea></label>
+          <label>Examples and analogies that click for you<textarea name="analogies" rows="2" placeholder="e.g. cricket, cooking, video games"></textarea></label>
+          <label>What are you strong at?<textarea name="strengths" rows="2"></textarea></label>
+          <label>What do you find hard?<textarea name="weaknesses" rows="2" placeholder="the tutor will slow down here"></textarea></label>
+          <label>Anything else the tutor should remember<textarea name="notes" rows="3"></textarea></label>
+          <div class="profile-actions">
+            <button type="submit" id="profile-save">Save profile</button>
+            <span id="profile-saved" class="profile-saved" hidden>Saved</span>
+          </div>
+          <div id="profile-error" class="test-error" hidden></div>
+        </form>
       </div>
 
       <div id="subject-view" class="subject-view" hidden>
@@ -138,6 +196,7 @@
     </main>
   </div>
 
+  <script src="auth.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
