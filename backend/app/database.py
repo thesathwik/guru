@@ -69,9 +69,10 @@ _ADDED_COLUMNS = {
     },
     # Ownership arrived after these tables existed. NULL is the shared
     # library, so every existing row keeps being visible to everyone.
-    "subjects": {"owner_id": "INTEGER"},
+    "subjects": {"owner_id": "INTEGER", "classroom_id": "INTEGER"},
     "tests": {"owner_id": "INTEGER"},
     "test_attempts": {"user_id": "INTEGER"},
+    "users": {"is_teacher": "BOOLEAN DEFAULT FALSE"},
     "materials": {
         "page_count": "INTEGER",
         "scanned_page_count": "INTEGER",

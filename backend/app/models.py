@@ -27,6 +27,9 @@ class User(Base):
     display_name = Column(String, nullable=True)
     # Who may add to the shared library. Seeded from ADMIN_EMAILS.
     is_admin = Column(Boolean, nullable=False, default=False)
+    # Set by an administrator. A teacher can run classes of their own; it
+    # grants nothing over the shared library or over anyone else's class.
+    is_teacher = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_seen_at = Column(DateTime, nullable=True)
 
@@ -72,6 +75,48 @@ class LearnerProfile(Base):
     user = relationship("User", back_populates="profile")
 
 
+class Classroom(Base):
+    """A teacher's class. Its subjects are visible to its members and to
+    nobody else - a third tier between the shared library and a student's
+    own uploads."""
+
+    __tablename__ = "classrooms"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    teacher = relationship("User", foreign_keys=[teacher_id])
+    members = relationship(
+        "ClassMember", back_populates="classroom", cascade="all, delete-orphan"
+    )
+    subjects = relationship("Subject", back_populates="classroom")
+
+
+class ClassMember(Base):
+    """A student on a class roster.
+
+    Keyed on email rather than user id, because a teacher adds people
+    before they have necessarily signed up. `user_id` stays NULL until
+    somebody signs in with that address, at which point the invitation is
+    claimed - otherwise a teacher would have to wait for every student to
+    register, and re-add anyone who registered later.
+    """
+
+    __tablename__ = "class_members"
+
+    id = Column(Integer, primary_key=True)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
+    email = Column(String, nullable=False)  # lowercased
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    joined_at = Column(DateTime, nullable=True)
+
+    classroom = relationship("Classroom", back_populates="members")
+    user = relationship("User", foreign_keys=[user_id])
+
+
 class Subject(Base):
     __tablename__ = "subjects"
 
@@ -83,7 +128,14 @@ class Subject(Base):
     # personal upload, visible only to that user. Existing rows are all
     # NULL, so the library everyone already sees stays shared.
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # Set means the subject belongs to a class: visible to its roster and
+    # its teacher rather than to everyone. Scoping classes at the subject
+    # level is what keeps retrieval unchanged - inside a subject the
+    # existing owner_id rule already separates class material (NULL) from
+    # a student's own notes.
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=True)
 
+    classroom = relationship("Classroom", back_populates="subjects")
     materials = relationship(
         "Material", back_populates="subject", cascade="all, delete-orphan"
     )

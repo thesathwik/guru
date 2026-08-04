@@ -96,8 +96,37 @@ def _user_from_claims(db: Session, claims: dict) -> models.User:
 
     user.last_seen_at = datetime.utcnow()
     db.commit()
+    _claim_invitations(db, user)
     db.refresh(user)
     return user
+
+
+def _claim_invitations(db: Session, user: models.User) -> None:
+    """Attaches this account to any class it was invited to by email.
+
+    A teacher builds a roster before the students have signed up, so the
+    invitation is stored against an address. This is where it becomes a
+    membership - which also means a student who registers later, or who is
+    added after they registered, ends up in the class either way.
+    """
+    if not user.email:
+        return
+
+    pending = (
+        db.query(models.ClassMember)
+        .filter(
+            models.ClassMember.email == user.email,
+            models.ClassMember.user_id.is_(None),
+        )
+        .all()
+    )
+    if not pending:
+        return
+
+    for member in pending:
+        member.user_id = user.id
+        member.joined_at = datetime.utcnow()
+    db.commit()
 
 
 def _development_user(db: Session) -> models.User:
@@ -133,13 +162,7 @@ def require_admin(user: models.User = Depends(current_user)) -> models.User:
     return user
 
 
-def visible_to(query, model, user: models.User):
-    """Restricts a query to the shared library plus this user's own things.
-
-    Shared rows carry owner_id NULL, which is also what every row created
-    before sign-in existed carries - so the library everyone was already
-    using stays visible to everyone.
-    """
-    return query.filter(
-        (model.owner_id.is_(None)) | (model.owner_id == user.id)
-    )
+def require_teacher(user: models.User = Depends(current_user)) -> models.User:
+    if not (user.is_teacher or user.is_admin):
+        raise HTTPException(403, "Only a teacher can do that")
+    return user

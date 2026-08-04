@@ -10,7 +10,7 @@ load_dotenv()
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -50,29 +50,73 @@ class ProcessingError(Exception):
     student about, as opposed to an unexpected crash."""
 
 
-def _can_see(row, user: models.User) -> bool:
-    """Shared rows (owner_id NULL) are everyone's; personal rows are their
-    owner's alone."""
+def _classroom_ids(db, user: models.User) -> set[int]:
+    """Classes this user belongs to, whether teaching or enrolled."""
+    taught = {
+        row.id
+        for row in db.query(models.Classroom.id).filter_by(teacher_id=user.id).all()
+    }
+    enrolled = {
+        row.classroom_id
+        for row in db.query(models.ClassMember.classroom_id)
+        .filter_by(user_id=user.id)
+        .all()
+    }
+    return taught | enrolled
+
+
+def _can_see(row, user: models.User, classroom_ids: set[int] | None = None) -> bool:
+    """Three tiers, checked in order of how narrow they are.
+
+    A row belonging to a class is visible to that class; otherwise the
+    original rule stands - owner_id NULL is the shared library, and a set
+    owner_id is personal. Materials and figures have no classroom of their
+    own: they inherit it from the subject they sit in, which is what keeps
+    the retrieval filter untouched.
+    """
+    if getattr(row, "classroom_id", None) is not None:
+        return row.classroom_id in (classroom_ids or set())
     return row.owner_id is None or row.owner_id == user.id
 
 
 def _can_edit(row, user: models.User) -> bool:
-    """The shared library is the administrator's to change; a personal
-    upload is its owner's."""
+    """Who may change a thing: the class's teacher for class material, an
+    administrator for the shared library, the owner for personal."""
+    classroom_id = getattr(row, "classroom_id", None)
+    if classroom_id is not None:
+        classroom = getattr(row, "classroom", None)
+        return bool(classroom and classroom.teacher_id == user.id) or user.is_admin
     return user.is_admin if row.owner_id is None else row.owner_id == user.id
 
 
 def _visible_subject(db, subject_id: int, user: models.User) -> models.Subject:
     subject = db.get(models.Subject, subject_id)
-    if subject is None or not _can_see(subject, user):
+    if subject is None or not _can_see(subject, user, _classroom_ids(db, user)):
         # 404 rather than 403 for something that exists but is not theirs:
         # a different status would confirm it exists.
         raise HTTPException(404, "Subject not found")
     return subject
 
 
+def _publishes_to_class(subject: models.Subject, user: models.User) -> bool:
+    """Whether this user's upload into this subject is for everyone who can
+    see it, or just for themselves.
+
+    A teacher adding to their own class is publishing to the class; a
+    student in that same class is adding a private note. Both land in the
+    same subject, told apart by owner_id exactly as before.
+    """
+    if subject.classroom_id is not None:
+        return bool(subject.classroom and subject.classroom.teacher_id == user.id)
+    if subject.owner_id is None:
+        return user.is_admin
+    return False
+
+
 def _visible_materials(subject: models.Subject, user: models.User) -> list:
-    return [m for m in subject.materials if _can_see(m, user)]
+    # Materials carry no classroom of their own - reaching here means the
+    # subject was already authorised, so owner_id alone decides.
+    return [m for m in subject.materials if m.owner_id is None or m.owner_id == user.id]
 
 
 def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
@@ -244,10 +288,22 @@ def create_subject(
         slug = f"{base_slug}-{suffix}"
         suffix += 1
 
-    # An administrator can add to the shared library; anyone else creates
-    # a subject only they can see.
-    shared = bool(payload.shared and user.is_admin)
-    subject = models.Subject(name=name, slug=slug, owner_id=None if shared else user.id)
+    classroom_id = None
+    if payload.classroom_id is not None:
+        classroom = db.get(models.Classroom, payload.classroom_id)
+        if classroom is None or classroom.teacher_id != user.id:
+            raise HTTPException(403, "You do not teach that class")
+        classroom_id = classroom.id
+
+    # An administrator can add to the shared library; a teacher can add to
+    # a class they run; anyone else creates a subject only they can see.
+    shared = bool(payload.shared and user.is_admin) and classroom_id is None
+    subject = models.Subject(
+        name=name,
+        slug=slug,
+        classroom_id=classroom_id,
+        owner_id=None if (shared or classroom_id is not None) else user.id,
+    )
     db.add(subject)
     db.commit()
     db.refresh(subject)
@@ -266,9 +322,26 @@ def list_subjects(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.current_user),
 ):
-    subjects = auth.visible_to(
-        db.query(models.Subject), models.Subject, user
-    ).order_by(models.Subject.created_at.desc()).all()
+    mine = _classroom_ids(db, user)
+    # The shared library and this user's own subjects, plus the subjects of
+    # every class they are in. Built as a list so "no classes" simply omits
+    # that clause rather than putting a Python False into the SQL.
+    conditions = [
+        models.Subject.classroom_id.is_(None)
+        & (
+            (models.Subject.owner_id.is_(None))
+            | (models.Subject.owner_id == user.id)
+        )
+    ]
+    if mine:
+        conditions.append(models.Subject.classroom_id.in_(mine))
+
+    subjects = (
+        db.query(models.Subject)
+        .filter(or_(*conditions))
+        .order_by(models.Subject.created_at.desc())
+        .all()
+    )
 
     results = []
     for subject in subjects:
@@ -276,7 +349,9 @@ def list_subjects(
         # Counts what this user can actually see, not what exists: a
         # shared subject shows a different number to different people.
         out.material_count = len(_visible_materials(subject, user))
-        out.shared = subject.owner_id is None
+        out.shared = subject.owner_id is None and subject.classroom_id is None
+        out.classroom_id = subject.classroom_id
+        out.classroom_name = subject.classroom.name if subject.classroom else None
         results.append(out)
     return results
 
@@ -292,7 +367,9 @@ def get_subject(
     out = schemas.SubjectDetailOut.model_validate(subject)
     out.materials = [schemas.MaterialOut.model_validate(m) for m in visible]
     out.material_count = len(visible)
-    out.shared = subject.owner_id is None
+    out.shared = subject.owner_id is None and subject.classroom_id is None
+    out.classroom_id = subject.classroom_id
+    out.classroom_name = subject.classroom.name if subject.classroom else None
     return out
 
 
@@ -336,10 +413,11 @@ async def upload_material(
     # doesn't stall every other request being served concurrently.
     await run_in_threadpool(get_storage().save, raw_path, data)
 
-    # Adding to the shared library is an administrator's act; everyone
-    # else's upload is personal, even into a shared subject - which is
-    # what lets a student keep their own notes beside the class textbook.
-    shared_upload = subject.owner_id is None and user.is_admin
+    # Publishing is the teacher's act in a class and the administrator's
+    # in the shared library; everyone else's upload is personal, even in a
+    # subject they share - which is what lets a student keep their own
+    # notes beside the class textbook.
+    shared_upload = _publishes_to_class(subject, user)
     material = models.Material(
         subject_id=subject.id,
         owner_id=None if shared_upload else user.id,
@@ -790,6 +868,248 @@ def get_attempt(
     user: models.User = Depends(auth.current_user),
 ):
     return _attempt_out(_own_attempt(db, attempt_id, user))
+
+
+def _classroom_out(db, classroom: models.Classroom, user: models.User):
+    out = schemas.ClassroomOut.model_validate(classroom)
+    out.teaching = classroom.teacher_id == user.id
+    out.teacher_name = classroom.teacher.display_name or classroom.teacher.email
+    out.member_count = len(classroom.members)
+    out.subject_count = len(classroom.subjects)
+    return out
+
+
+def _taught_classroom(db, classroom_id: int, user: models.User) -> models.Classroom:
+    classroom = db.get(models.Classroom, classroom_id)
+    if classroom is None or (classroom.teacher_id != user.id and not user.is_admin):
+        raise HTTPException(404, "Class not found")
+    return classroom
+
+
+@app.get("/api/classes", response_model=list[schemas.ClassroomOut])
+def list_classes(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """Classes this user teaches or is enrolled in."""
+    ids = _classroom_ids(db, user)
+    if not ids:
+        return []
+    rooms = (
+        db.query(models.Classroom)
+        .filter(models.Classroom.id.in_(ids))
+        .order_by(models.Classroom.created_at.desc())
+        .all()
+    )
+    return [_classroom_out(db, room, user) for room in rooms]
+
+
+@app.post("/api/classes", response_model=schemas.ClassroomOut)
+def create_class(
+    payload: schemas.ClassroomCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require_teacher),
+):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Class name is required")
+    classroom = models.Classroom(name=name, teacher_id=user.id)
+    db.add(classroom)
+    db.commit()
+    db.refresh(classroom)
+    return _classroom_out(db, classroom, user)
+
+
+@app.delete("/api/classes/{classroom_id}")
+def delete_class(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    classroom = _taught_classroom(db, classroom_id, user)
+    if classroom.subjects:
+        raise HTTPException(
+            400,
+            "Delete this class's subjects first - removing it would hide "
+            f"{len(classroom.subjects)} subject(s) from everyone in it.",
+        )
+    db.delete(classroom)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/classes/{classroom_id}/members", response_model=list[schemas.ClassMemberOut])
+def list_members(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """The roster. Only the teacher sees it: to a student, who else is in
+    the class is not theirs to enumerate."""
+    classroom = _taught_classroom(db, classroom_id, user)
+    return [
+        schemas.ClassMemberOut(
+            id=m.id,
+            email=m.email,
+            display_name=m.user.display_name if m.user else None,
+            joined=m.user_id is not None,
+            added_at=m.added_at,
+        )
+        for m in sorted(classroom.members, key=lambda m: m.email)
+    ]
+
+
+@app.post("/api/classes/{classroom_id}/members", response_model=schemas.ClassMemberOut)
+def add_member(
+    classroom_id: int,
+    payload: schemas.ClassMemberCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    classroom = _taught_classroom(db, classroom_id, user)
+    email = payload.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "A valid email address is required")
+
+    existing = (
+        db.query(models.ClassMember)
+        .filter_by(classroom_id=classroom.id, email=email)
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(400, "That address is already on the roster")
+
+    # Link straight away if they have already signed up; otherwise the
+    # invitation is claimed the first time they do.
+    account = db.query(models.User).filter_by(email=email).first()
+    member = models.ClassMember(
+        classroom_id=classroom.id,
+        email=email,
+        user_id=account.id if account else None,
+        joined_at=datetime.utcnow() if account else None,
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return schemas.ClassMemberOut(
+        id=member.id,
+        email=member.email,
+        display_name=account.display_name if account else None,
+        joined=member.user_id is not None,
+        added_at=member.added_at,
+    )
+
+
+@app.delete("/api/classes/{classroom_id}/members/{member_id}")
+def remove_member(
+    classroom_id: int,
+    member_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    classroom = _taught_classroom(db, classroom_id, user)
+    member = db.get(models.ClassMember, member_id)
+    if member is None or member.classroom_id != classroom.id:
+        raise HTTPException(404, "Not on this roster")
+    db.delete(member)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/classes/{classroom_id}/progress")
+def class_progress(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """How the class is doing on tests drawn from its own subjects.
+
+    Scores only. A teacher does not get their students' personal uploads,
+    their chat, or their learner profile - being able to see progress is
+    not a reason to see everything.
+    """
+    classroom = _taught_classroom(db, classroom_id, user)
+    subject_ids = [s.id for s in classroom.subjects]
+    if not subject_ids:
+        return {"class": classroom.name, "students": []}
+
+    rows = (
+        db.query(models.TestAttempt, models.Test, models.User)
+        .join(models.Test, models.TestAttempt.test_id == models.Test.id)
+        .join(models.User, models.TestAttempt.user_id == models.User.id)
+        .filter(
+            models.Test.subject_id.in_(subject_ids),
+            models.TestAttempt.submitted_at.isnot(None),
+        )
+        .all()
+    )
+
+    member_ids = {m.user_id for m in classroom.members if m.user_id}
+    by_student: dict[int, dict] = {}
+    for attempt, test, student in rows:
+        if student.id not in member_ids:
+            continue  # left the class since sitting the test
+        entry = by_student.setdefault(
+            student.id,
+            {"name": student.display_name or student.email, "attempts": []},
+        )
+        entry["attempts"].append(
+            {
+                "test": test.title,
+                "score": attempt.score_points,
+                "out_of": attempt.max_points,
+                "percent": round(100 * (attempt.score_points or 0) / attempt.max_points)
+                if attempt.max_points
+                else None,
+                "submitted_at": attempt.submitted_at,
+            }
+        )
+
+    students = []
+    for member in classroom.members:
+        entry = by_student.get(member.user_id) if member.user_id else None
+        attempts = entry["attempts"] if entry else []
+        scored = [a["percent"] for a in attempts if a["percent"] is not None]
+        students.append(
+            {
+                "email": member.email,
+                "name": (entry or {}).get("name"),
+                "joined": member.user_id is not None,
+                "attempts": sorted(attempts, key=lambda a: a["submitted_at"] or 0),
+                "average_percent": round(sum(scored) / len(scored)) if scored else None,
+            }
+        )
+    return {"class": classroom.name, "students": students}
+
+
+@app.get("/api/admin/users", response_model=list[schemas.AdminUserOut])
+def list_users(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require_admin),
+):
+    return db.query(models.User).order_by(models.User.created_at.desc()).all()
+
+
+@app.put("/api/admin/users/{user_id}", response_model=schemas.AdminUserOut)
+def set_user_role(
+    user_id: int,
+    payload: schemas.AdminUserUpdate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(auth.require_admin),
+):
+    """Promotes an account to teacher, or demotes it.
+
+    Admin rights are not settable here - they follow ADMIN_EMAILS, so that
+    the set of people who can change the shared library lives in
+    configuration rather than being editable from inside the app.
+    """
+    target = db.get(models.User, user_id)
+    if target is None:
+        raise HTTPException(404, "User not found")
+    target.is_teacher = payload.is_teacher
+    db.commit()
+    db.refresh(target)
+    return target
 
 
 @app.get("/api/config")

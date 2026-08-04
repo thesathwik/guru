@@ -29,6 +29,7 @@
       <h1>Guru</h1>
       <form id="new-subject-form">
         <input id="new-subject-name" type="text" placeholder="New subject, e.g. Social" required />
+        <select id="new-subject-target" class="subject-target" hidden></select>
         <button type="submit">+ Add subject</button>
       </form>
       <ul id="subject-list" class="subject-list"></ul>
@@ -39,7 +40,8 @@
           <span id="account-role" class="account-role" hidden>admin</span>
         </div>
         <div class="account-actions">
-          <button type="button" id="open-profile" class="secondary-button">My profile</button>
+          <button type="button" id="open-profile" class="secondary-button">Profile</button>
+          <button type="button" id="open-classes" class="secondary-button">Classes</button>
           <button type="button" id="sign-out" class="secondary-button">Sign out</button>
         </div>
       </div>
@@ -48,6 +50,30 @@
     <main class="content">
       <div id="empty-state" class="empty-state">
         <p>Select a subject on the left, or create a new one to get started.</p>
+      </div>
+
+      <div id="classes-view" class="profile-view" hidden>
+        <div class="test-take-header">
+          <div>
+            <h2>Classes</h2>
+            <p class="hint" id="classes-hint"></p>
+          </div>
+          <button type="button" id="close-classes" class="secondary-button">Done</button>
+        </div>
+
+        <form id="class-form" class="class-create" hidden>
+          <input id="class-name" type="text" placeholder="New class, e.g. Class 9A" />
+          <button type="submit">Create class</button>
+        </form>
+
+        <div id="class-list" class="class-list"></div>
+
+        <div id="admin-section" hidden>
+          <h3 class="test-list-heading">People</h3>
+          <p class="hint">Promote an account to teacher so they can run classes of their own.</p>
+          <div id="admin-users" class="class-list"></div>
+        </div>
+        <div id="classes-error" class="test-error" hidden></div>
       </div>
 
       <div id="profile-view" class="profile-view" hidden>

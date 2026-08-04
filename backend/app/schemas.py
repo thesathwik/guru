@@ -8,6 +8,8 @@ class SubjectCreate(BaseModel):
     # Only honoured for an administrator; everyone else gets a subject of
     # their own regardless of what they ask for.
     shared: bool = False
+    # Only honoured for the teacher of that class.
+    classroom_id: int | None = None
 
 
 class MaterialOut(BaseModel):
@@ -34,6 +36,8 @@ class SubjectOut(BaseModel):
     created_at: datetime
     material_count: int = 0
     shared: bool = False
+    classroom_id: int | None = None
+    classroom_name: str | None = None
 
     class Config:
         from_attributes = True
@@ -182,7 +186,56 @@ class MeOut(BaseModel):
     email: str | None = None
     display_name: str | None = None
     is_admin: bool = False
+    is_teacher: bool = False
     profile: LearnerProfileOut | None = None
 
     class Config:
         from_attributes = True
+
+
+class ClassroomCreate(BaseModel):
+    name: str
+
+
+class ClassroomOut(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+    teaching: bool = False
+    teacher_name: str | None = None
+    member_count: int = 0
+    subject_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class ClassMemberCreate(BaseModel):
+    email: str
+
+
+class ClassMemberOut(BaseModel):
+    id: int
+    email: str
+    display_name: str | None = None
+    # False means invited but not yet signed up; the invitation is claimed
+    # the first time that address signs in.
+    joined: bool = False
+    added_at: datetime | None = None
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    email: str | None = None
+    display_name: str | None = None
+    is_admin: bool = False
+    is_teacher: bool = False
+    created_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class AdminUserUpdate(BaseModel):
+    is_teacher: bool

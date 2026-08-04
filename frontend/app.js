@@ -89,7 +89,12 @@ async function loadSubjects() {
   for (const subject of subjects) {
     const li = document.createElement("li");
     li.className = subject.id === activeSubjectId ? "active" : "";
-    li.innerHTML = `<span>${escapeHtml(subject.name)}</span><span class="count">${subject.material_count}</span>`;
+    const scope = subject.classroom_name
+      ? `<span class="subject-scope">${escapeHtml(subject.classroom_name)}</span>`
+      : "";
+    li.innerHTML =
+      `<span class="subject-name">${escapeHtml(subject.name)}${scope}</span>` +
+      `<span class="count">${subject.material_count}</span>`;
     li.addEventListener("click", () => selectSubject(subject.id));
     subjectListEl.appendChild(li);
   }
@@ -173,10 +178,15 @@ document.getElementById("new-subject-form").addEventListener("submit", async (e)
   const input = document.getElementById("new-subject-name");
   const name = input.value.trim();
   if (!name) return;
+  const target = document.getElementById("new-subject-target").value;
+  const body = { name };
+  if (target === "shared") body.shared = true;
+  else if (target.startsWith("class:")) body.classroom_id = Number(target.slice(6));
+
   const subject = await api("/subjects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(body),
   });
   input.value = "";
   await selectSubject(subject.id);
@@ -776,6 +786,7 @@ function showApp() {
 
 function showProfile(open) {
   profileViewEl.hidden = !open;
+  classesViewEl.hidden = true;
   subjectViewEl.hidden = open || activeSubjectId === null;
   emptyStateEl.hidden = open || activeSubjectId !== null;
 }
@@ -875,9 +886,212 @@ document.getElementById("profile-form").addEventListener("submit", async (e) => 
   }
 });
 
+// --------------------------------------------------------------- Classes
+
+const classesViewEl = document.getElementById("classes-view");
+let myClasses = [];
+
+function showClasses(open) {
+  classesViewEl.hidden = !open;
+  profileViewEl.hidden = true;
+  subjectViewEl.hidden = open || activeSubjectId === null;
+  emptyStateEl.hidden = open || activeSubjectId !== null;
+  if (open) renderClasses();
+}
+
+// Where a new subject goes. A teacher can put one in a class they run; an
+// administrator can add to the shared library; otherwise it is personal.
+function renderSubjectTarget() {
+  const select = document.getElementById("new-subject-target");
+  const options = [`<option value="">Just for me</option>`];
+  if (me && me.is_admin) options.push(`<option value="shared">Shared library</option>`);
+  for (const c of myClasses.filter((c) => c.teaching)) {
+    options.push(`<option value="class:${c.id}">${escapeHtml(c.name)}</option>`);
+  }
+  select.innerHTML = options.join("");
+  select.hidden = options.length < 2;
+}
+
+async function loadClasses() {
+  myClasses = await api("/classes");
+  renderSubjectTarget();
+  return myClasses;
+}
+
+function renderClassCard(c) {
+  const row = document.createElement("div");
+  row.className = "test-list-item class-card";
+  row.innerHTML = `
+    <div class="test-list-main">
+      <span class="test-list-title">${escapeHtml(c.name)}</span>
+      <span class="test-list-meta">
+        ${c.teaching ? "You teach this" : "Taught by " + escapeHtml(c.teacher_name || "—")}
+        · ${c.subject_count} subject${c.subject_count === 1 ? "" : "s"}${
+          c.teaching ? ` · ${c.member_count} student${c.member_count === 1 ? "" : "s"}` : ""
+        }
+      </span>
+    </div>
+    ${c.teaching ? `<div class="test-list-actions">
+      <button type="button" class="manage-class">Manage</button>
+    </div>` : ""}
+  `;
+  if (c.teaching) {
+    row.querySelector(".manage-class").addEventListener("click", () => openClassDetail(c));
+  }
+  return row;
+}
+
+async function renderClasses() {
+  const listEl = document.getElementById("class-list");
+  const hintEl = document.getElementById("classes-hint");
+  const formEl = document.getElementById("class-form");
+
+  const canTeach = me && (me.is_teacher || me.is_admin);
+  formEl.hidden = !canTeach;
+  hintEl.textContent = canTeach
+    ? "Material you add to a class is visible to everyone on its roster. Students can still upload their own files, which stay private to them."
+    : "Classes you have been added to. Their material appears alongside your own subjects.";
+
+  document.getElementById("admin-section").hidden = !(me && me.is_admin);
+  if (me && me.is_admin) renderAdminUsers();
+
+  await loadClasses();
+  listEl.innerHTML = "";
+  if (myClasses.length === 0) {
+    listEl.innerHTML = `<p class="hint">${
+      canTeach ? "No classes yet. Create one above." : "You are not in any class yet."
+    }</p>`;
+    return;
+  }
+  for (const c of myClasses) listEl.appendChild(renderClassCard(c));
+}
+
+async function openClassDetail(c) {
+  const listEl = document.getElementById("class-list");
+  const [members, progress] = await Promise.all([
+    api(`/classes/${c.id}/members`),
+    api(`/classes/${c.id}/progress`),
+  ]);
+
+  const scores = {};
+  for (const s of progress.students) scores[s.email] = s;
+
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div><h3>${escapeHtml(c.name)}</h3>
+        <p class="hint">Add students by email. They can be added before they sign up &mdash;
+        the invitation is claimed the first time that address signs in.</p></div>
+      <button type="button" class="secondary-button back-to-classes">Back</button>
+    </div>
+    <form class="add-member">
+      <input type="email" placeholder="student@example.com" required />
+      <button type="submit">Add student</button>
+    </form>
+    <table class="materials-table">
+      <thead><tr><th>Student</th><th>Status</th><th>Tests taken</th><th>Average</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="member-error test-error" hidden></div>
+  `;
+
+  const tbody = panel.querySelector("tbody");
+  for (const m of members) {
+    const s = scores[m.email] || {};
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(m.display_name || m.email)}<br><span class="test-list-meta">${escapeHtml(m.email)}</span></td>
+      <td><span class="status ${m.joined ? "status-processed" : "status-uploaded"}">${m.joined ? "joined" : "invited"}</span></td>
+      <td>${(s.attempts || []).length}</td>
+      <td>${s.average_percent !== null && s.average_percent !== undefined ? s.average_percent + "%" : "—"}</td>
+      <td><span class="delete-link">remove</span></td>
+    `;
+    tr.querySelector(".delete-link").addEventListener("click", async () => {
+      await api(`/classes/${c.id}/members/${m.id}`, { method: "DELETE" });
+      openClassDetail(c);
+    });
+    tbody.appendChild(tr);
+  }
+
+  panel.querySelector(".back-to-classes").addEventListener("click", renderClasses);
+  panel.querySelector(".add-member").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = e.target.querySelector("input");
+    const errorEl = panel.querySelector(".member-error");
+    showError(errorEl, null);
+    try {
+      await api(`/classes/${c.id}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: input.value.trim() }),
+      });
+      input.value = "";
+      openClassDetail(c);
+    } catch (err) {
+      showError(errorEl, err.message);
+    }
+  });
+
+  listEl.appendChild(panel);
+}
+
+async function renderAdminUsers() {
+  const el = document.getElementById("admin-users");
+  const users = await api("/admin/users");
+  el.innerHTML = "";
+  for (const u of users) {
+    const row = document.createElement("div");
+    row.className = "test-list-item";
+    row.innerHTML = `
+      <div class="test-list-main">
+        <span class="test-list-title">${escapeHtml(u.display_name || u.email || "—")}</span>
+        <span class="test-list-meta">${escapeHtml(u.email || "")}${u.is_admin ? " · admin" : ""}</span>
+      </div>
+      <div class="test-list-actions">
+        <button type="button" class="secondary-button toggle-teacher">
+          ${u.is_teacher ? "Remove teacher" : "Make teacher"}
+        </button>
+      </div>`;
+    row.querySelector(".toggle-teacher").addEventListener("click", async () => {
+      await api(`/admin/users/${u.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_teacher: !u.is_teacher }),
+      });
+      renderAdminUsers();
+    });
+    el.appendChild(row);
+  }
+}
+
+document.getElementById("open-classes").addEventListener("click", () => showClasses(true));
+document.getElementById("close-classes").addEventListener("click", () => showClasses(false));
+
+document.getElementById("class-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("class-name");
+  const errorEl = document.getElementById("classes-error");
+  showError(errorEl, null);
+  if (!input.value.trim()) return;
+  try {
+    await api("/classes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: input.value.trim() }),
+    });
+    input.value = "";
+    await renderClasses();
+  } catch (err) {
+    showError(errorEl, err.message);
+  }
+});
+
 async function start() {
   showApp();
   await loadMe();
+  await loadClasses();
   await loadSubjects();
 }
 

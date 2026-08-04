@@ -370,3 +370,31 @@ The service is public and the app has no authentication. Options, in
 increasing effort: leave it (the URL is unguessable but not secret), put
 Identity-Aware Proxy in front, or drop `--allow-unauthenticated` and
 reach it through `gcloud run services proxy`.
+
+## Classes
+
+Material sits in one of three tiers, decided at the subject level:
+
+| Subject | `owner_id` | `classroom_id` | Who sees it |
+|---|---|---|---|
+| Shared library | NULL | NULL | everyone |
+| Class | NULL | set | that class's roster and its teacher |
+| Personal | set | NULL | that user |
+
+Inside a subject the original rule still decides each material: `owner_id`
+NULL is for everyone who can see the subject, and a set `owner_id` is that
+person's alone. So a student's notes in a class subject stay private *from
+the teacher as well* - being able to set the reading does not mean being
+able to read what a student writes.
+
+That is also why retrieval was untouched by adding classes. `search_chunks`
+already filters `owner_id IS NULL OR owner_id = me` within an
+already-authorised subject, which is exactly right in a class subject too.
+
+Teachers are promoted by an administrator (People, on the Classes screen).
+A teacher can run their own classes and nothing more: not the shared
+library, and not another teacher's class.
+
+Rosters are keyed on email, so a teacher can add students before they have
+signed up. The invitation is claimed the first time that address signs in,
+which also covers a student who registers later or is added afterwards.

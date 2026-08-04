@@ -1037,3 +1037,93 @@ button:disabled {
   color: #16a34a;
   font-weight: 600;
 }
+
+/* ------------------------------------------------------ Classes */
+
+.subject-target {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+#new-subject-form {
+  flex-wrap: wrap;
+}
+
+.subject-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.subject-scope {
+  font-size: 10px;
+  color: #7c6df2;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.class-create {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  max-width: 480px;
+}
+
+.class-create input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.class-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 760px;
+  padding-bottom: 20px;
+}
+
+.class-detail {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.class-detail h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.add-member {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+  max-width: 420px;
+}
+
+.add-member input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.class-detail .materials-table {
+  margin-top: 8px;
+}
+
+.account-actions {
+  flex-wrap: wrap;
+}
