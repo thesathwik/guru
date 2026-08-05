@@ -169,6 +169,37 @@ def backfill_default_school() -> None:
             )
 
 
+def backfill_terms() -> None:
+    """Gives every academic year one term, so a school can produce a
+    report card without first configuring grading periods. A school that
+    wants three terms renames this one and adds the others."""
+    from sqlalchemy import text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if not {"academic_years", "terms"} <= tables:
+        return
+
+    now = datetime.utcnow()
+    with engine.begin() as connection:
+        years = connection.execute(
+            text(
+                "SELECT y.id, y.school_id FROM academic_years y "
+                " LEFT JOIN terms t ON t.academic_year_id = y.id "
+                " WHERE t.id IS NULL"
+            )
+        ).all()
+        for year_id, school_id in years:
+            connection.execute(
+                text(
+                    "INSERT INTO terms "
+                    "(school_id, academic_year_id, name, is_current, created_at) "
+                    "VALUES (:s, :y, 'Term 1', TRUE, :now)"
+                ),
+                {"s": school_id, "y": year_id, "now": now},
+            )
+
+
 def backfill_academic_structure() -> None:
     """Gives every school a current academic year, and moves any class
     roster onto the student/enrolment model.

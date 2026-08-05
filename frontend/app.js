@@ -989,6 +989,8 @@ async function openClassDetail(c) {
         first time they sign in.</p></div>
       <div class="test-take-actions">
         <button type="button" class="secondary-button take-attendance">Attendance</button>
+        <button type="button" class="secondary-button open-marks">Marks</button>
+        <button type="button" class="secondary-button open-reports">Reports</button>
         <button type="button" class="secondary-button back-to-classes">Back</button>
       </div>
     </div>
@@ -1030,6 +1032,8 @@ async function openClassDetail(c) {
 
   panel.querySelector(".back-to-classes").addEventListener("click", renderClasses);
   panel.querySelector(".take-attendance").addEventListener("click", () => openAttendance(c));
+  panel.querySelector(".open-marks").addEventListener("click", () => openMarks(c));
+  panel.querySelector(".open-reports").addEventListener("click", () => openReports(c));
   panel.querySelector(".add-member").addEventListener("submit", async (e) => {
     e.preventDefault();
     const errorEl = panel.querySelector(".member-error");
@@ -1190,6 +1194,260 @@ async function openAttendanceSummary(c) {
     tbody.appendChild(tr);
   }
   panel.querySelector(".back-to-att").addEventListener("click", () => openAttendance(c));
+  listEl.appendChild(panel);
+}
+
+async function currentTerm() {
+  const terms = await api("/terms");
+  return terms.find((t) => t.is_current) || terms[0] || null;
+}
+
+async function openMarks(c) {
+  const listEl = document.getElementById("class-list");
+  const term = await currentTerm();
+  const assessments = await api(`/classes/${c.id}/assessments`);
+
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div><h3>${escapeHtml(c.name)} &mdash; marks</h3>
+        <p class="hint">${term ? escapeHtml(term.name) : "No term set up"} &middot;
+        a blank score means the student did not sit it, which is not the same as zero.</p></div>
+      <button type="button" class="secondary-button back-to-class">Back</button>
+    </div>
+    <form class="add-assessment">
+      <input name="name" placeholder="Assessment, e.g. Unit Test 1" required />
+      <input name="subject_name" placeholder="Subject" />
+      <input name="max_marks" type="number" min="1" value="100" class="roll-input" />
+      <button type="submit">Add</button>
+    </form>
+    <div class="assessment-list"></div>
+    <div class="marks-error test-error" hidden></div>
+  `;
+
+  const wrap = panel.querySelector(".assessment-list");
+  if (assessments.length === 0) {
+    wrap.innerHTML = '<p class="hint">No assessments yet.</p>';
+  }
+  for (const a of assessments) {
+    const row = document.createElement("div");
+    row.className = "test-list-item";
+    row.innerHTML = `
+      <div class="test-list-main">
+        <span class="test-list-title">${escapeHtml(a.name)}</span>
+        <span class="test-list-meta">${escapeHtml(a.subject_name || "General")} &middot; out of ${a.max_marks}</span>
+      </div>
+      <div class="test-list-actions"><button type="button" class="enter-marks">Enter marks</button></div>`;
+    row.querySelector(".enter-marks").addEventListener("click", () => openMarkEntry(c, a));
+    wrap.appendChild(row);
+  }
+
+  panel.querySelector(".back-to-class").addEventListener("click", () => openClassDetail(c));
+  panel.querySelector(".add-assessment").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const errorEl = panel.querySelector(".marks-error");
+    showError(errorEl, null);
+    const body = { term_id: term ? term.id : null };
+    for (const f of e.target.querySelectorAll("input[name]")) body[f.name] = f.value.trim();
+    body.max_marks = Number(body.max_marks || 100);
+    try {
+      await api(`/classes/${c.id}/assessments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      openMarks(c);
+    } catch (err) { showError(errorEl, err.message); }
+  });
+  listEl.appendChild(panel);
+}
+
+async function openMarkEntry(c, assessment) {
+  const listEl = document.getElementById("class-list");
+  const data = await api(`/assessments/${assessment.id}/marks`);
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div><h3>${escapeHtml(data.assessment)}</h3>
+        <p class="hint">Out of ${data.max_marks}. Leave blank for a student who did not sit it.</p></div>
+      <button type="button" class="secondary-button back-to-marks">Back</button>
+    </div>
+    <div class="att-list"></div>
+    <div class="att-actions">
+      <button type="button" class="save-marks">Save marks</button>
+      <span class="marks-saved profile-saved" hidden>Saved</span>
+    </div>
+    <div class="marks-error test-error" hidden></div>`;
+
+  const wrap = panel.querySelector(".att-list");
+  for (const e of data.entries) {
+    const row = document.createElement("div");
+    row.className = "att-row";
+    row.innerHTML = `
+      <span class="att-roll">${escapeHtml(e.roll_number || "—")}</span>
+      <span class="att-name">${escapeHtml(e.full_name)}</span>
+      <input type="number" class="mark-input" data-enrolment="${e.enrolment_id}"
+             min="0" max="${data.max_marks}" step="0.5"
+             value="${e.score === null ? "" : e.score}" placeholder="—" />`;
+    wrap.appendChild(row);
+  }
+
+  panel.querySelector(".back-to-marks").addEventListener("click", () => openMarks(c));
+  panel.querySelector(".save-marks").addEventListener("click", async (ev) => {
+    const errorEl = panel.querySelector(".marks-error");
+    showError(errorEl, null);
+    ev.target.disabled = true;
+    const entries = [...panel.querySelectorAll(".mark-input")].map((i) => ({
+      enrolment_id: Number(i.dataset.enrolment),
+      score: i.value === "" ? null : Number(i.value),
+    }));
+    try {
+      await api(`/assessments/${assessment.id}/marks`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries }),
+      });
+      const saved = panel.querySelector(".marks-saved");
+      saved.hidden = false;
+      setTimeout(() => (saved.hidden = true), 2000);
+    } catch (err) { showError(errorEl, err.message); }
+    finally { ev.target.disabled = false; }
+  });
+  listEl.appendChild(panel);
+}
+
+async function openReports(c) {
+  const listEl = document.getElementById("class-list");
+  const term = await currentTerm();
+  if (!term) {
+    listEl.innerHTML = '<p class="hint">Set up a term first.</p>';
+    return;
+  }
+  const data = await api(`/classes/${c.id}/report-cards?term_id=${term.id}`);
+
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div><h3>${escapeHtml(c.name)} &mdash; report cards</h3>
+        <p class="hint">${escapeHtml(data.term)}. Marks and attendance are calculated
+        from the record; the comment is drafted for you to edit. Nothing is published
+        until you have read it.</p></div>
+      <div class="test-take-actions">
+        <button type="button" class="secondary-button draft-all">Draft comments</button>
+        <button type="button" class="secondary-button back-to-class">Back</button>
+      </div>
+    </div>
+    <table class="materials-table">
+      <thead><tr><th>Roll</th><th>Student</th><th>Overall</th><th>Grade</th><th>Attendance</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="report-error test-error" hidden></div>`;
+
+  const tbody = panel.querySelector("tbody");
+  for (const r of data.cards) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(r.roll_number || "—")}</td>
+      <td>${escapeHtml(r.full_name)}</td>
+      <td>${r.overall_percent === null ? "—" : r.overall_percent + "%"}</td>
+      <td>${r.overall_grade || "—"}</td>
+      <td>${r.attendance_percent === null ? "—" : r.attendance_percent + "%"}</td>
+      <td><span class="status status-${r.status === "published" ? "processed" : "uploaded"}">${r.status}</span></td>
+      <td>${r.report_card_id ? '<span class="delete-link open-card">open</span>' : ""}</td>`;
+    if (r.report_card_id) {
+      tr.querySelector(".open-card").addEventListener("click", () => openCard(c, r.report_card_id));
+    }
+    tbody.appendChild(tr);
+  }
+
+  panel.querySelector(".back-to-class").addEventListener("click", () => openClassDetail(c));
+  panel.querySelector(".draft-all").addEventListener("click", async (ev) => {
+    const errorEl = panel.querySelector(".report-error");
+    showError(errorEl, null);
+    ev.target.disabled = true;
+    ev.target.textContent = "Drafting...";
+    try {
+      const res = await api(`/classes/${c.id}/report-cards?term_id=${term.id}`, { method: "POST" });
+      if (res.comment_failed) {
+        showError(errorEl, `${res.comment_failed} comment(s) could not be drafted. The cards are still complete.`);
+      }
+      openReports(c);
+    } catch (err) {
+      showError(errorEl, err.message);
+      ev.target.disabled = false;
+      ev.target.textContent = "Draft comments";
+    }
+  });
+  listEl.appendChild(panel);
+}
+
+async function openCard(c, cardId) {
+  const listEl = document.getElementById("class-list");
+  const d = await api(`/report-cards/${cardId}`);
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div><h3>${escapeHtml(d.student.full_name)}</h3>
+        <p class="hint">${escapeHtml(d.term)} &middot; ${escapeHtml(d.classroom || "")}
+        ${d.student.admission_number ? "&middot; " + escapeHtml(d.student.admission_number) : ""}</p></div>
+      <button type="button" class="secondary-button back-to-reports">Back</button>
+    </div>
+    <table class="materials-table">
+      <thead><tr><th>Subject</th><th>Marks</th><th>%</th><th>Grade</th></tr></thead>
+      <tbody>${d.subjects.map((s) => `
+        <tr><td>${escapeHtml(s.subject)}</td>
+            <td>${s.scored}/${s.out_of}</td>
+            <td>${s.percent === null ? "—" : s.percent + "%"}</td>
+            <td>${s.grade || "—"}</td></tr>`).join("")}
+        <tr><td><strong>Overall</strong></td><td></td>
+            <td><strong>${d.overall_percent === null ? "—" : d.overall_percent + "%"}</strong></td>
+            <td><strong>${d.overall_grade || "—"}</strong></td></tr>
+      </tbody>
+    </table>
+    <p class="hint">Attendance: ${d.attendance.percent === null ? "not recorded" :
+      d.attendance.percent + "% (" + d.attendance.present + " present, " +
+      d.attendance.absent + " absent, " + d.attendance.late + " late, " +
+      d.attendance.excused + " excused)"}</p>
+    ${d.comment_is_draft && d.comment ? '<p class="draft-flag">This comment is the model\'s draft. Read it, edit it, and save before publishing.</p>' : ""}
+    <label class="card-comment-label">Comment to parents
+      <textarea class="card-comment" rows="5">${escapeHtml(d.comment || "")}</textarea>
+    </label>
+    <div class="att-actions">
+      <button type="button" class="save-comment">Save comment</button>
+      <button type="button" class="secondary-button publish-card">${d.status === "published" ? "Published" : "Publish"}</button>
+      <span class="card-saved profile-saved" hidden>Saved</span>
+    </div>
+    <div class="card-error test-error" hidden></div>`;
+
+  panel.querySelector(".back-to-reports").addEventListener("click", () => openReports(c));
+  panel.querySelector(".save-comment").addEventListener("click", async () => {
+    const errorEl = panel.querySelector(".card-error");
+    showError(errorEl, null);
+    try {
+      await api(`/report-cards/${cardId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ comment: panel.querySelector(".card-comment").value }),
+      });
+      openCard(c, cardId);
+    } catch (err) { showError(errorEl, err.message); }
+  });
+  panel.querySelector(".publish-card").addEventListener("click", async () => {
+    const errorEl = panel.querySelector(".card-error");
+    showError(errorEl, null);
+    try {
+      await api(`/report-cards/${cardId}/publish`, { method: "POST" });
+      openCard(c, cardId);
+    } catch (err) { showError(errorEl, err.message); }
+  });
   listEl.appendChild(panel);
 }
 

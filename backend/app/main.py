@@ -14,12 +14,24 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import auth, embeddings, models, ocr, preprocessing, schemas, testgen, tutor, workqueue
+from . import (
+    auth,
+    embeddings,
+    models,
+    ocr,
+    preprocessing,
+    reportcard,
+    schemas,
+    testgen,
+    tutor,
+    workqueue,
+)
 from .database import (
     Base,
     SessionLocal,
     apply_migrations,
     backfill_academic_structure,
+    backfill_terms,
     backfill_default_school,
     engine,
     get_db,
@@ -31,6 +43,7 @@ Base.metadata.create_all(bind=engine)
 apply_migrations()
 backfill_default_school()
 backfill_academic_structure()
+backfill_terms()
 
 app = FastAPI(title="Guru - LLM Tutor")
 
@@ -1406,6 +1419,314 @@ def attendance_summary(
         "until": end,
         "students": students,
     }
+
+
+@app.get("/api/terms", response_model=list[schemas.TermOut])
+def list_terms(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require_school),
+):
+    return (
+        db.query(models.Term)
+        .filter_by(school_id=user.school_id)
+        .order_by(models.Term.created_at)
+        .all()
+    )
+
+
+@app.post("/api/terms", response_model=schemas.TermOut)
+def create_term(
+    payload: schemas.TermCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require_admin),
+):
+    year = (
+        db.query(models.AcademicYear)
+        .filter_by(school_id=user.school_id, is_current=True)
+        .first()
+    )
+    term = models.Term(
+        school_id=user.school_id,
+        academic_year_id=year.id if year else None,
+        name=payload.name.strip(),
+        starts_on=payload.starts_on,
+        ends_on=payload.ends_on,
+    )
+    db.add(term)
+    db.commit()
+    db.refresh(term)
+    return term
+
+
+@app.get("/api/classes/{classroom_id}/assessments", response_model=list[schemas.AssessmentOut])
+def list_assessments(
+    classroom_id: int,
+    term_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    classroom = _taught_classroom(db, classroom_id, user)
+    query = db.query(models.Assessment).filter_by(classroom_id=classroom.id)
+    if term_id:
+        query = query.filter_by(term_id=term_id)
+    return query.order_by(models.Assessment.created_at).all()
+
+
+@app.post("/api/classes/{classroom_id}/assessments", response_model=schemas.AssessmentOut)
+def create_assessment(
+    classroom_id: int,
+    payload: schemas.AssessmentCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    classroom = _taught_classroom(db, classroom_id, user)
+    if not payload.name.strip():
+        raise HTTPException(400, "An assessment name is required")
+    if payload.max_marks <= 0:
+        raise HTTPException(400, "Maximum marks must be above zero")
+
+    assessment = models.Assessment(
+        school_id=classroom.school_id,
+        classroom_id=classroom.id,
+        term_id=payload.term_id,
+        subject_name=(payload.subject_name or "").strip() or None,
+        name=payload.name.strip(),
+        max_marks=payload.max_marks,
+        on_date=payload.on_date,
+    )
+    db.add(assessment)
+    db.commit()
+    db.refresh(assessment)
+    return assessment
+
+
+def _own_assessment(db, assessment_id: int, user: models.User) -> models.Assessment:
+    assessment = db.get(models.Assessment, assessment_id)
+    if assessment is None or assessment.school_id != user.school_id:
+        raise HTTPException(404, "Assessment not found")
+    _taught_classroom(db, assessment.classroom_id, user)
+    return assessment
+
+
+@app.get("/api/assessments/{assessment_id}/marks")
+def get_marks(
+    assessment_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    assessment = _own_assessment(db, assessment_id, user)
+    existing = {m.enrolment_id: m for m in assessment.marks}
+    entries = []
+    for enrolment in sorted(
+        [e for e in assessment.classroom.enrolments if e.left_on is None],
+        key=lambda e: (e.roll_number or "", e.student.full_name),
+    ):
+        mark = existing.get(enrolment.id)
+        entries.append(
+            {
+                "enrolment_id": enrolment.id,
+                "full_name": enrolment.student.full_name,
+                "roll_number": enrolment.roll_number,
+                # None means not sat, which is not zero.
+                "score": mark.score if mark else None,
+                "remark": mark.remark if mark else None,
+            }
+        )
+    return {
+        "assessment": assessment.name,
+        "max_marks": assessment.max_marks,
+        "entries": entries,
+    }
+
+
+@app.put("/api/assessments/{assessment_id}/marks")
+def save_marks(
+    assessment_id: int,
+    payload: schemas.MarksSave,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    assessment = _own_assessment(db, assessment_id, user)
+    valid = {e.id for e in assessment.classroom.enrolments if e.left_on is None}
+    for entry in payload.entries:
+        if entry.enrolment_id not in valid:
+            raise HTTPException(400, "That student is not in this class")
+        if entry.score is not None and not (0 <= entry.score <= assessment.max_marks):
+            raise HTTPException(
+                400, f"Scores must be between 0 and {assessment.max_marks:g}"
+            )
+
+    existing = {m.enrolment_id: m for m in assessment.marks}
+    for entry in payload.entries:
+        mark = existing.get(entry.enrolment_id)
+        if mark is None:
+            db.add(
+                models.Mark(
+                    assessment_id=assessment.id,
+                    enrolment_id=entry.enrolment_id,
+                    score=entry.score,
+                    remark=(entry.remark or "").strip() or None,
+                )
+            )
+        else:
+            mark.score = entry.score
+            mark.remark = (entry.remark or "").strip() or None
+    db.commit()
+    return get_marks(assessment_id, db, user)
+
+
+def _term_for(db, term_id: int, user: models.User) -> models.Term:
+    term = db.get(models.Term, term_id)
+    if term is None or term.school_id != user.school_id:
+        raise HTTPException(404, "Term not found")
+    return term
+
+
+@app.post("/api/classes/{classroom_id}/report-cards")
+def generate_report_cards(
+    classroom_id: int,
+    term_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """Drafts a card for every student in the class.
+
+    The comment is a draft in the strict sense: it stays unpublished until
+    a teacher has read it. A published card is one a person signed off,
+    never one a model wrote unattended.
+    """
+    classroom = _taught_classroom(db, classroom_id, user)
+    term = _term_for(db, term_id, user)
+
+    drafted, failed = 0, 0
+    for enrolment in [e for e in classroom.enrolments if e.left_on is None]:
+        card = (
+            db.query(models.ReportCard)
+            .filter_by(enrolment_id=enrolment.id, term_id=term.id)
+            .first()
+        )
+        if card is None:
+            card = models.ReportCard(
+                school_id=classroom.school_id,
+                enrolment_id=enrolment.id,
+                term_id=term.id,
+            )
+            db.add(card)
+        elif card.status == "published":
+            continue  # never overwrite something already sent to a parent
+
+        data = reportcard.build(db, enrolment, term)
+        try:
+            card.comment = reportcard.draft_comment(data)
+            card.comment_is_draft = True
+            drafted += 1
+        except Exception:  # noqa: BLE001 - the card is complete without it
+            failed += 1
+        card.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {"drafted": drafted, "comment_failed": failed}
+
+
+@app.get("/api/classes/{classroom_id}/report-cards")
+def list_report_cards(
+    classroom_id: int,
+    term_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    classroom = _taught_classroom(db, classroom_id, user)
+    term = _term_for(db, term_id, user)
+    cards = {
+        c.enrolment_id: c
+        for c in db.query(models.ReportCard).filter_by(term_id=term.id).all()
+    }
+    out = []
+    for enrolment in sorted(
+        [e for e in classroom.enrolments if e.left_on is None],
+        key=lambda e: (e.roll_number or "", e.student.full_name),
+    ):
+        card = cards.get(enrolment.id)
+        data = reportcard.build(db, enrolment, term)
+        out.append(
+            {
+                "report_card_id": card.id if card else None,
+                "enrolment_id": enrolment.id,
+                "full_name": enrolment.student.full_name,
+                "roll_number": enrolment.roll_number,
+                "overall_percent": data["overall_percent"],
+                "overall_grade": data["overall_grade"],
+                "attendance_percent": data["attendance"]["percent"],
+                "status": card.status if card else "none",
+                "has_comment": bool(card and card.comment),
+            }
+        )
+    return {"term": term.name, "cards": out}
+
+
+def _own_card(db, card_id: int, user: models.User) -> models.ReportCard:
+    card = db.get(models.ReportCard, card_id)
+    if card is None or card.school_id != user.school_id:
+        raise HTTPException(404, "Report card not found")
+    _taught_classroom(db, card.enrolment.classroom_id, user)
+    return card
+
+
+@app.get("/api/report-cards/{card_id}")
+def get_report_card(
+    card_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    card = _own_card(db, card_id, user)
+    data = reportcard.build(db, card.enrolment, card.term)
+    data.update(
+        {
+            "report_card_id": card.id,
+            "comment": card.comment,
+            "comment_is_draft": card.comment_is_draft,
+            "status": card.status,
+            "published_at": card.published_at,
+        }
+    )
+    return data
+
+
+@app.put("/api/report-cards/{card_id}")
+def update_report_card(
+    card_id: int,
+    payload: schemas.ReportCardUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    card = _own_card(db, card_id, user)
+    card.comment = (payload.comment or "").strip() or None
+    # Once a teacher has edited it, it is theirs rather than the model's.
+    card.comment_is_draft = False
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return get_report_card(card_id, db, user)
+
+
+@app.post("/api/report-cards/{card_id}/publish")
+def publish_report_card(
+    card_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """Publishing is the teacher taking responsibility for the card, so an
+    untouched machine-written comment cannot be published by accident."""
+    card = _own_card(db, card_id, user)
+    if card.comment and card.comment_is_draft:
+        raise HTTPException(
+            400,
+            "Read and save the comment before publishing - it is still the "
+            "draft the model wrote.",
+        )
+    card.status = "published"
+    card.published_at = datetime.utcnow()
+    db.commit()
+    return get_report_card(card_id, db, user)
 
 
 @app.get("/api/classes/{classroom_id}/progress")

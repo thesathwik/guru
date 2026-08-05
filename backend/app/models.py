@@ -250,6 +250,109 @@ class Enrolment(Base):
     classroom = relationship("Classroom", back_populates="enrolments")
 
 
+class Term(Base):
+    """A grading period inside a year - "Term 1", "Half Yearly".
+
+    Report cards are per term, and so is everything they aggregate, so the
+    period is a row rather than a pair of dates passed around.
+    """
+
+    __tablename__ = "terms"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    academic_year_id = Column(Integer, ForeignKey("academic_years.id"), nullable=True)
+    name = Column(String, nullable=False)
+    starts_on = Column(Date, nullable=True)
+    ends_on = Column(Date, nullable=True)
+    is_current = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Assessment(Base):
+    """A piece of work a class was marked on.
+
+    Separate from Test, which is the AI-generated kind: most of what
+    reaches a report card is a teacher's own exam or assignment, entered
+    by hand. Both feed the report card; only this one carries the marks a
+    school considers official.
+    """
+
+    __tablename__ = "assessments"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
+    term_id = Column(Integer, ForeignKey("terms.id"), nullable=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=True)
+    # Free text so a school is not forced into our vocabulary.
+    subject_name = Column(String, nullable=True)
+    name = Column(String, nullable=False)
+    max_marks = Column(Float, nullable=False, default=100)
+    on_date = Column(Date, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    classroom = relationship("Classroom")
+    marks = relationship(
+        "Mark", back_populates="assessment", cascade="all, delete-orphan"
+    )
+
+
+class Mark(Base):
+    """One student's score on one assessment.
+
+    NULL score means not sat rather than zero - a student who missed an
+    exam has not scored nothing, and averaging the two together would be
+    wrong.
+    """
+
+    __tablename__ = "marks"
+
+    id = Column(Integer, primary_key=True)
+    assessment_id = Column(Integer, ForeignKey("assessments.id"), nullable=False)
+    enrolment_id = Column(Integer, ForeignKey("enrolments.id"), nullable=False)
+    score = Column(Float, nullable=True)
+    remark = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "enrolment_id", name="uq_mark_once"),
+    )
+
+    assessment = relationship("Assessment", back_populates="marks")
+    enrolment = relationship("Enrolment")
+
+
+class ReportCard(Base):
+    """A term's report for one enrolment.
+
+    Only the comment is stored. Every number on the card is recomputed
+    from marks and attendance when it is read, so a corrected mark is
+    never contradicted by a stale copy sitting in this row.
+    """
+
+    __tablename__ = "report_cards"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    enrolment_id = Column(Integer, ForeignKey("enrolments.id"), nullable=False)
+    term_id = Column(Integer, ForeignKey("terms.id"), nullable=False)
+    # Drafted by the model, owned by the teacher: nothing reaches a parent
+    # without a person having read it.
+    comment = Column(Text, nullable=True)
+    comment_is_draft = Column(Boolean, nullable=False, default=True)
+    status = Column(String, nullable=False, default="draft")  # draft, published
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("enrolment_id", "term_id", name="uq_report_once"),
+    )
+
+    enrolment = relationship("Enrolment")
+    term = relationship("Term")
+
+
 class AttendanceSession(Base):
     """One class, one day: the fact that attendance was taken at all.
 

@@ -308,3 +308,55 @@ class AttendanceDayOut(BaseModel):
     taken: bool = False
     taken_at: datetime | None = None
     entries: list[AttendanceEntryOut] = []
+
+
+class TermCreate(BaseModel):
+    name: str
+    starts_on: date | None = None
+    ends_on: date | None = None
+
+
+class TermOut(BaseModel):
+    id: int
+    name: str
+    starts_on: date | None = None
+    ends_on: date | None = None
+    is_current: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class AssessmentCreate(BaseModel):
+    name: str
+    max_marks: float = 100
+    subject_name: str | None = None
+    term_id: int | None = None
+    on_date: date | None = None
+
+
+class AssessmentOut(BaseModel):
+    id: int
+    name: str
+    max_marks: float
+    subject_name: str | None = None
+    term_id: int | None = None
+    on_date: date | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class MarkIn(BaseModel):
+    enrolment_id: int
+    # None means the student did not sit it, which is not a zero.
+    score: float | None = None
+    remark: str | None = None
+
+
+class MarksSave(BaseModel):
+    entries: list[MarkIn] = []
+
+
+class ReportCardUpdate(BaseModel):
+    comment: str | None = None
