@@ -1143,3 +1143,75 @@ button:disabled {
 .add-member .roll-input {
   flex: 0 0 90px;
 }
+
+/* --------------------------------------------------- Attendance */
+
+.att-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0;
+}
+
+.att-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.att-roll {
+  width: 40px;
+  flex-shrink: 0;
+  color: #888;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.att-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-buttons {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.att-btn {
+  background: #fff;
+  color: #666;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.att-btn:hover { background: #f4f4f7; }
+
+.att-btn.active.att-present { background: #d1fae5; border-color: #16a34a; color: #065f46; }
+.att-btn.active.att-absent  { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+.att-btn.active.att-late    { background: #fef3c7; border-color: #d97706; color: #92400e; }
+.att-btn.active.att-excused { background: #e5e7eb; border-color: #6b7280; color: #374151; }
+
+.att-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.att-date {
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 13px;
+}

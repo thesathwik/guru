@@ -987,7 +987,10 @@ async function openClassDetail(c) {
         <p class="hint">A student is a person on the roll, not an account. Add them with
         or without an email; if you give one, their login connects to this record the
         first time they sign in.</p></div>
-      <button type="button" class="secondary-button back-to-classes">Back</button>
+      <div class="test-take-actions">
+        <button type="button" class="secondary-button take-attendance">Attendance</button>
+        <button type="button" class="secondary-button back-to-classes">Back</button>
+      </div>
     </div>
     <form class="add-member">
       <input name="full_name" type="text" placeholder="Student name" />
@@ -1026,6 +1029,7 @@ async function openClassDetail(c) {
   }
 
   panel.querySelector(".back-to-classes").addEventListener("click", renderClasses);
+  panel.querySelector(".take-attendance").addEventListener("click", () => openAttendance(c));
   panel.querySelector(".add-member").addEventListener("submit", async (e) => {
     e.preventDefault();
     const errorEl = panel.querySelector(".member-error");
@@ -1046,6 +1050,146 @@ async function openClassDetail(c) {
     }
   });
 
+  listEl.appendChild(panel);
+}
+
+// The register is a daily job, so it opens with everyone present and the
+// teacher only marks the exceptions - the common case is no typing at all.
+async function openAttendance(c, day) {
+  const listEl = document.getElementById("class-list");
+  const on = day || new Date().toISOString().slice(0, 10);
+  const data = await api(`/classes/${c.id}/attendance?on=${on}`);
+
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div>
+        <h3>${escapeHtml(c.name)} &mdash; attendance</h3>
+        <p class="hint" id="att-state"></p>
+      </div>
+      <div class="test-take-actions">
+        <input type="date" class="att-date" value="${on}" />
+        <button type="button" class="secondary-button back-to-class">Back</button>
+      </div>
+    </div>
+    <div class="att-list"></div>
+    <div class="att-actions">
+      <button type="button" class="att-save">Save register</button>
+      <span class="att-saved profile-saved" hidden>Saved</span>
+      <span class="att-summary-link delete-link">View summary</span>
+    </div>
+    <div class="att-error test-error" hidden></div>
+  `;
+
+  panel.querySelector("#att-state").textContent = data.taken
+    ? `Marked ${new Date(data.taken_at).toLocaleString()} — changing it here corrects the record.`
+    : "Not marked yet. Everyone starts present; tap a student to change them.";
+
+  const listWrap = panel.querySelector(".att-list");
+  if (data.entries.length === 0) {
+    listWrap.innerHTML = '<p class="hint">No students enrolled in this class yet.</p>';
+  }
+
+  const state = new Map();
+  for (const e of data.entries) {
+    state.set(e.enrolment_id, e.status || "present");
+    const row = document.createElement("div");
+    row.className = "att-row";
+    row.innerHTML = `
+      <span class="att-roll">${escapeHtml(e.roll_number || "—")}</span>
+      <span class="att-name">${escapeHtml(e.full_name)}</span>
+      <span class="att-buttons">
+        ${["present", "absent", "late", "excused"]
+          .map(
+            (st) =>
+              `<button type="button" class="att-btn att-${st}" data-status="${st}">${st}</button>`
+          )
+          .join("")}
+      </span>
+    `;
+    const paint = () => {
+      const current = state.get(e.enrolment_id);
+      for (const b of row.querySelectorAll(".att-btn")) {
+        b.classList.toggle("active", b.dataset.status === current);
+      }
+    };
+    for (const b of row.querySelectorAll(".att-btn")) {
+      b.addEventListener("click", () => {
+        state.set(e.enrolment_id, b.dataset.status);
+        paint();
+      });
+    }
+    paint();
+    listWrap.appendChild(row);
+  }
+
+  panel.querySelector(".back-to-class").addEventListener("click", () => openClassDetail(c));
+  panel.querySelector(".att-date").addEventListener("change", (e) =>
+    openAttendance(c, e.target.value)
+  );
+  panel.querySelector(".att-summary-link").addEventListener("click", () =>
+    openAttendanceSummary(c)
+  );
+
+  panel.querySelector(".att-save").addEventListener("click", async (e) => {
+    const errorEl = panel.querySelector(".att-error");
+    const savedEl = panel.querySelector(".att-saved");
+    showError(errorEl, null);
+    e.target.disabled = true;
+    try {
+      await api(`/classes/${c.id}/attendance?on=${panel.querySelector(".att-date").value}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entries: [...state].map(([enrolment_id, status]) => ({ enrolment_id, status })),
+        }),
+      });
+      savedEl.hidden = false;
+      setTimeout(() => (savedEl.hidden = true), 2000);
+      panel.querySelector("#att-state").textContent =
+        "Marked just now — changing it here corrects the record.";
+    } catch (err) {
+      showError(errorEl, err.message);
+    } finally {
+      e.target.disabled = false;
+    }
+  });
+
+  listEl.appendChild(panel);
+}
+
+async function openAttendanceSummary(c) {
+  const listEl = document.getElementById("class-list");
+  const data = await api(`/classes/${c.id}/attendance/summary`);
+  listEl.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "class-detail";
+  panel.innerHTML = `
+    <div class="test-take-header">
+      <div><h3>${escapeHtml(c.name)} &mdash; attendance summary</h3>
+        <p class="hint">${data.sessions_held} session(s) recorded. Late counts as
+        attended; excused is left out of the percentage entirely.</p></div>
+      <button type="button" class="secondary-button back-to-att">Back</button>
+    </div>
+    <table class="materials-table">
+      <thead><tr><th>Roll</th><th>Student</th><th>Present</th><th>Absent</th><th>Late</th><th>Excused</th><th>%</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  `;
+  const tbody = panel.querySelector("tbody");
+  for (const st of data.students) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(st.roll_number || "—")}</td>
+      <td>${escapeHtml(st.full_name)}</td>
+      <td>${st.present}</td><td>${st.absent}</td><td>${st.late}</td><td>${st.excused}</td>
+      <td>${st.percent === null ? "—" : st.percent + "%"}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  panel.querySelector(".back-to-att").addEventListener("click", () => openAttendance(c));
   listEl.appendChild(panel);
 }
 

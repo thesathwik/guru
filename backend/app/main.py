@@ -1208,6 +1208,206 @@ def remove_member(
     return {"ok": True}
 
 
+ATTENDANCE_STATUSES = ("present", "absent", "late", "excused")
+
+
+def _parse_date(value: str | None):
+    from datetime import date as _date
+
+    if not value:
+        return _date.today()
+    try:
+        return _date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(400, "Date must be YYYY-MM-DD")
+
+
+@app.get("/api/classes/{classroom_id}/attendance", response_model=schemas.AttendanceDayOut)
+def get_attendance(
+    classroom_id: int,
+    on: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """The register for one day: every enrolled student, with whatever was
+    already marked. `taken` says whether anyone has marked it at all - an
+    unmarked day is not a day everyone was present."""
+    classroom = _taught_classroom(db, classroom_id, user)
+    day = _parse_date(on)
+
+    session = (
+        db.query(models.AttendanceSession)
+        .filter_by(classroom_id=classroom.id, on_date=day)
+        .first()
+    )
+    marked = {r.enrolment_id: r for r in (session.records if session else [])}
+
+    entries = []
+    for enrolment in sorted(
+        [e for e in classroom.enrolments if e.left_on is None],
+        key=lambda e: (e.roll_number or "", e.student.full_name),
+    ):
+        record = marked.get(enrolment.id)
+        entries.append(
+            schemas.AttendanceEntryOut(
+                enrolment_id=enrolment.id,
+                student_id=enrolment.student_id,
+                full_name=enrolment.student.full_name,
+                roll_number=enrolment.roll_number,
+                # Unmarked defaults to present in the UI, but it is
+                # reported as-is here so the caller can tell them apart.
+                status=record.status if record else None,
+                note=record.note if record else None,
+            )
+        )
+
+    return schemas.AttendanceDayOut(
+        classroom_id=classroom.id,
+        classroom_name=classroom.name,
+        on_date=day,
+        taken=session is not None,
+        taken_at=session.taken_at if session else None,
+        entries=entries,
+    )
+
+
+@app.put("/api/classes/{classroom_id}/attendance", response_model=schemas.AttendanceDayOut)
+def save_attendance(
+    classroom_id: int,
+    payload: schemas.AttendanceSave,
+    on: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """Marks the register, replacing whatever was there for that day.
+
+    Correcting a register is normal - a student turns up late, or was
+    marked by mistake - so this is idempotent rather than append-only, and
+    records who touched it last.
+    """
+    classroom = _taught_classroom(db, classroom_id, user)
+    day = _parse_date(on)
+
+    valid = {e.id for e in classroom.enrolments if e.left_on is None}
+    for entry in payload.entries:
+        if entry.status not in ATTENDANCE_STATUSES:
+            raise HTTPException(
+                400, f"Status must be one of {', '.join(ATTENDANCE_STATUSES)}"
+            )
+        if entry.enrolment_id not in valid:
+            raise HTTPException(400, "That student is not in this class")
+
+    session = (
+        db.query(models.AttendanceSession)
+        .filter_by(classroom_id=classroom.id, on_date=day)
+        .first()
+    )
+    if session is None:
+        session = models.AttendanceSession(
+            school_id=classroom.school_id,
+            classroom_id=classroom.id,
+            academic_year_id=classroom.academic_year_id,
+            on_date=day,
+            taken_by_id=user.id,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+    else:
+        session.taken_by_id = user.id
+        session.updated_at = datetime.utcnow()
+
+    existing = {r.enrolment_id: r for r in session.records}
+    for entry in payload.entries:
+        record = existing.get(entry.enrolment_id)
+        if record is None:
+            db.add(
+                models.AttendanceRecord(
+                    session_id=session.id,
+                    enrolment_id=entry.enrolment_id,
+                    status=entry.status,
+                    note=(entry.note or "").strip() or None,
+                )
+            )
+        else:
+            record.status = entry.status
+            record.note = (entry.note or "").strip() or None
+    db.commit()
+
+    return get_attendance(classroom_id, on, db, user)
+
+
+@app.get("/api/classes/{classroom_id}/attendance/summary")
+def attendance_summary(
+    classroom_id: int,
+    since: str | None = None,
+    until: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """Attendance per student over a range.
+
+    Late counts as attended - the student was there. Excused is left out
+    of the denominator entirely rather than counted either way, since a
+    sanctioned absence should not read as poor attendance. Both choices
+    are reported alongside the percentage so a school can recompute it
+    their own way.
+    """
+    classroom = _taught_classroom(db, classroom_id, user)
+    start = _parse_date(since) if since else None
+    end = _parse_date(until) if until else None
+
+    query = db.query(models.AttendanceSession).filter_by(classroom_id=classroom.id)
+    if start:
+        query = query.filter(models.AttendanceSession.on_date >= start)
+    if end:
+        query = query.filter(models.AttendanceSession.on_date <= end)
+    sessions = query.all()
+    session_ids = [s.id for s in sessions]
+
+    records = (
+        db.query(models.AttendanceRecord)
+        .filter(models.AttendanceRecord.session_id.in_(session_ids))
+        .all()
+        if session_ids
+        else []
+    )
+
+    by_enrolment: dict[int, dict] = {}
+    for record in records:
+        counts = by_enrolment.setdefault(
+            record.enrolment_id, {s: 0 for s in ATTENDANCE_STATUSES}
+        )
+        counts[record.status] = counts.get(record.status, 0) + 1
+
+    students = []
+    for enrolment in sorted(
+        [e for e in classroom.enrolments if e.left_on is None],
+        key=lambda e: (e.roll_number or "", e.student.full_name),
+    ):
+        counts = by_enrolment.get(enrolment.id, {s: 0 for s in ATTENDANCE_STATUSES})
+        attended = counts["present"] + counts["late"]
+        countable = attended + counts["absent"]
+        students.append(
+            {
+                "student_id": enrolment.student_id,
+                "full_name": enrolment.student.full_name,
+                "roll_number": enrolment.roll_number,
+                **counts,
+                "sessions_counted": countable,
+                "percent": round(100 * attended / countable) if countable else None,
+            }
+        )
+
+    return {
+        "classroom": classroom.name,
+        "sessions_held": len(sessions),
+        "since": start,
+        "until": end,
+        "students": students,
+    }
+
+
 @app.get("/api/classes/{classroom_id}/progress")
 def class_progress(
     classroom_id: int,

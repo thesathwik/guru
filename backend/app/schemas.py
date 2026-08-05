@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -279,3 +279,32 @@ class AdminUserOut(BaseModel):
 
 class AdminUserUpdate(BaseModel):
     is_teacher: bool
+
+
+class AttendanceEntryIn(BaseModel):
+    enrolment_id: int
+    status: str
+    note: str | None = None
+
+
+class AttendanceSave(BaseModel):
+    entries: list[AttendanceEntryIn] = []
+
+
+class AttendanceEntryOut(BaseModel):
+    enrolment_id: int
+    student_id: int
+    full_name: str
+    roll_number: str | None = None
+    # None means unmarked, which is not the same as present.
+    status: str | None = None
+    note: str | None = None
+
+
+class AttendanceDayOut(BaseModel):
+    classroom_id: int
+    classroom_name: str
+    on_date: date
+    taken: bool = False
+    taken_at: datetime | None = None
+    entries: list[AttendanceEntryOut] = []

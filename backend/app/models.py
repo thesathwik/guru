@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -247,6 +248,61 @@ class Enrolment(Base):
 
     student = relationship("Student", back_populates="enrolments")
     classroom = relationship("Classroom", back_populates="enrolments")
+
+
+class AttendanceSession(Base):
+    """One class, one day: the fact that attendance was taken at all.
+
+    Without this, a day with no records is ambiguous - it could mean
+    everybody was present, or that nobody marked the register. A school
+    needs to tell those apart, so the session is recorded explicitly and
+    the marks hang off it.
+    """
+
+    __tablename__ = "attendance_sessions"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
+    academic_year_id = Column(Integer, ForeignKey("academic_years.id"), nullable=True)
+    on_date = Column(Date, nullable=False)
+    taken_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    taken_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("classroom_id", "on_date", name="uq_attendance_class_date"),
+    )
+
+    classroom = relationship("Classroom")
+    records = relationship(
+        "AttendanceRecord", back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class AttendanceRecord(Base):
+    """How one student was marked in one session.
+
+    Keyed on the enrolment rather than the student: a student who changes
+    section mid-year should not have their new class's register rewrite
+    the old one's history.
+    """
+
+    __tablename__ = "attendance_records"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("attendance_sessions.id"), nullable=False)
+    enrolment_id = Column(Integer, ForeignKey("enrolments.id"), nullable=False)
+    # present, absent, late, excused
+    status = Column(String, nullable=False, default="present")
+    note = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "enrolment_id", name="uq_attendance_once"),
+    )
+
+    session = relationship("AttendanceSession", back_populates="records")
+    enrolment = relationship("Enrolment")
 
 
 class Subject(Base):
