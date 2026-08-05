@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -126,38 +127,126 @@ class Classroom(Base):
 
     id = Column(Integer, primary_key=True)
     school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    # A section exists within a year. "9A" in 2026-27 and "9A" in 2027-28
+    # are different sections with different rosters and different material,
+    # so rolling over a year creates new ones rather than mutating these.
+    academic_year_id = Column(Integer, ForeignKey("academic_years.id"), nullable=True)
     name = Column(String, nullable=False)
     teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     teacher = relationship("User", foreign_keys=[teacher_id])
-    members = relationship(
-        "ClassMember", back_populates="classroom", cascade="all, delete-orphan"
+    enrolments = relationship(
+        "Enrolment", back_populates="classroom", cascade="all, delete-orphan"
     )
     subjects = relationship("Subject", back_populates="classroom")
 
 
-class ClassMember(Base):
-    """A student on a class roster.
+class AcademicYear(Base):
+    """The year everything academic hangs off. Attendance, enrolment,
+    marks and report cards are all "for a year", and a school runs several
+    at once around a transition."""
 
-    Keyed on email rather than user id, because a teacher adds people
-    before they have necessarily signed up. `user_id` stays NULL until
-    somebody signs in with that address, at which point the invitation is
-    claimed - otherwise a teacher would have to wait for every student to
-    register, and re-add anyone who registered later.
-    """
-
-    __tablename__ = "class_members"
+    __tablename__ = "academic_years"
 
     id = Column(Integer, primary_key=True)
-    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
-    email = Column(String, nullable=False)  # lowercased
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
-    joined_at = Column(DateTime, nullable=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    name = Column(String, nullable=False)  # "2026-27"
+    starts_on = Column(Date, nullable=True)
+    ends_on = Column(Date, nullable=True)
+    is_current = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    classroom = relationship("Classroom", back_populates="members")
+
+class Student(Base):
+    """A person enrolled at the school - deliberately not a login.
+
+    Conflating the two is the standard mistake in school systems. A child
+    may have no account at all while their guardian does; an account may
+    belong to a teacher, a parent or an administrator. So identity
+    (`users`) and enrolment (`students`) are separate, joined by user_id
+    when and if that student ever signs in.
+    """
+
+    __tablename__ = "students"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    # The school's own identifier, and the one printed on everything.
+    admission_number = Column(String, nullable=True)
+    full_name = Column(String, nullable=False)
+    date_of_birth = Column(Date, nullable=True)
+    # The account that is this student, once they have one. Matched by
+    # email on first sign-in, exactly as a class invitation used to be.
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    email = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active, left
+    created_at = Column(DateTime, default=datetime.utcnow)
+
     user = relationship("User", foreign_keys=[user_id])
+    enrolments = relationship(
+        "Enrolment", back_populates="student", cascade="all, delete-orphan"
+    )
+    guardians = relationship(
+        "StudentGuardian", back_populates="student", cascade="all, delete-orphan"
+    )
+
+
+class Guardian(Base):
+    """A parent or guardian. Also not necessarily a login - many schools
+    hold a phone number and nothing more."""
+
+    __tablename__ = "guardians"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    full_name = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
+    students = relationship(
+        "StudentGuardian", back_populates="guardian", cascade="all, delete-orphan"
+    )
+
+
+class StudentGuardian(Base):
+    """Many-to-many on purpose: siblings share guardians, and a child can
+    have several with different relationships to them."""
+
+    __tablename__ = "student_guardians"
+
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    guardian_id = Column(Integer, ForeignKey("guardians.id"), nullable=False)
+    relation = Column(String, nullable=True)  # mother, father, guardian
+    is_primary = Column(Boolean, nullable=False, default=False)
+
+    student = relationship("Student", back_populates="guardians")
+    guardian = relationship("Guardian", back_populates="students")
+
+
+class Enrolment(Base):
+    """A student in a section for a year. The academic record, and what
+    attendance, marks and report cards will all hang off."""
+
+    __tablename__ = "enrolments"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False)
+    academic_year_id = Column(Integer, ForeignKey("academic_years.id"), nullable=True)
+    roll_number = Column(String, nullable=True)
+    enrolled_on = Column(DateTime, default=datetime.utcnow)
+    # Set when a student leaves mid-year. Kept rather than deleted: last
+    # year's marks belong to the enrolment that earned them.
+    left_on = Column(DateTime, nullable=True)
+
+    student = relationship("Student", back_populates="enrolments")
+    classroom = relationship("Classroom", back_populates="enrolments")
 
 
 class Subject(Base):

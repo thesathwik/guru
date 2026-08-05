@@ -19,6 +19,7 @@ from .database import (
     Base,
     SessionLocal,
     apply_migrations,
+    backfill_academic_structure,
     backfill_default_school,
     engine,
     get_db,
@@ -29,6 +30,7 @@ from .utils import slugify
 Base.metadata.create_all(bind=engine)
 apply_migrations()
 backfill_default_school()
+backfill_academic_structure()
 
 app = FastAPI(title="Guru - LLM Tutor")
 
@@ -68,10 +70,18 @@ def _classroom_ids(db, user: models.User) -> set[int]:
         .filter_by(teacher_id=user.id, school_id=user.school_id)
         .all()
     }
+    # A student reaches their classes through the student record their
+    # account is linked to, not directly: the person is the enrolled
+    # thing, the login is just how they get in.
     enrolled = {
         row.classroom_id
-        for row in db.query(models.ClassMember.classroom_id)
-        .filter_by(user_id=user.id)
+        for row in db.query(models.Enrolment.classroom_id)
+        .join(models.Student, models.Enrolment.student_id == models.Student.id)
+        .filter(
+            models.Student.user_id == user.id,
+            models.Enrolment.school_id == user.school_id,
+            models.Enrolment.left_on.is_(None),
+        )
         .all()
     }
     return taught | enrolled
@@ -906,7 +916,7 @@ def _classroom_out(db, classroom: models.Classroom, user: models.User):
     out = schemas.ClassroomOut.model_validate(classroom)
     out.teaching = classroom.teacher_id == user.id
     out.teacher_name = classroom.teacher.display_name or classroom.teacher.email
-    out.member_count = len(classroom.members)
+    out.member_count = len([e for e in classroom.enrolments if e.left_on is None])
     out.subject_count = len(classroom.subjects)
     return out
 
@@ -1048,8 +1058,16 @@ def create_class(
     name = payload.name.strip()
     if not name:
         raise HTTPException(400, "Class name is required")
+    current_year = (
+        db.query(models.AcademicYear)
+        .filter_by(school_id=user.school_id, is_current=True)
+        .first()
+    )
     classroom = models.Classroom(
-        school_id=user.school_id, name=name, teacher_id=user.id
+        school_id=user.school_id,
+        academic_year_id=current_year.id if current_year else None,
+        name=name,
+        teacher_id=user.id,
     )
     db.add(classroom)
     db.commit()
@@ -1075,7 +1093,7 @@ def delete_class(
     return {"ok": True}
 
 
-@app.get("/api/classes/{classroom_id}/members", response_model=list[schemas.ClassMemberOut])
+@app.get("/api/classes/{classroom_id}/members", response_model=list[schemas.EnrolmentOut])
 def list_members(
     classroom_id: int,
     db: Session = Depends(get_db),
@@ -1084,71 +1102,108 @@ def list_members(
     """The roster. Only the teacher sees it: to a student, who else is in
     the class is not theirs to enumerate."""
     classroom = _taught_classroom(db, classroom_id, user)
+    rows = [e for e in classroom.enrolments if e.left_on is None]
     return [
-        schemas.ClassMemberOut(
-            id=m.id,
-            email=m.email,
-            display_name=m.user.display_name if m.user else None,
-            joined=m.user_id is not None,
-            added_at=m.added_at,
+        schemas.EnrolmentOut(
+            id=e.id,
+            student_id=e.student.id,
+            full_name=e.student.full_name,
+            email=e.student.email,
+            admission_number=e.student.admission_number,
+            roll_number=e.roll_number,
+            # Whether the person has an account yet is incidental to being
+            # enrolled - the record exists either way.
+            has_account=e.student.user_id is not None,
+            enrolled_on=e.enrolled_on,
         )
-        for m in sorted(classroom.members, key=lambda m: m.email)
+        for e in sorted(rows, key=lambda e: (e.roll_number or "", e.student.full_name))
     ]
 
 
-@app.post("/api/classes/{classroom_id}/members", response_model=schemas.ClassMemberOut)
+@app.post("/api/classes/{classroom_id}/members", response_model=schemas.EnrolmentOut)
 def add_member(
     classroom_id: int,
-    payload: schemas.ClassMemberCreate,
+    payload: schemas.EnrolmentCreate,
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.current_user),
 ):
+    """Enrols a student, creating the student record if this is the first
+    the school has seen of them."""
     classroom = _taught_classroom(db, classroom_id, user)
-    email = payload.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(400, "A valid email address is required")
+    email = (payload.email or "").strip().lower() or None
+    name = (payload.full_name or "").strip() or email
+    if not name:
+        raise HTTPException(400, "A name or an email address is required")
+
+    student = None
+    if email:
+        student = (
+            db.query(models.Student)
+            .filter_by(school_id=classroom.school_id, email=email)
+            .first()
+        )
+    if student is None:
+        account = (
+            db.query(models.User).filter_by(email=email).first() if email else None
+        )
+        student = models.Student(
+            school_id=classroom.school_id,
+            full_name=name,
+            email=email,
+            admission_number=(payload.admission_number or "").strip() or None,
+            # Link now if they already have an account; otherwise the link
+            # is made the first time that address signs in.
+            user_id=account.id if account and account.school_id == classroom.school_id else None,
+        )
+        db.add(student)
+        db.commit()
+        db.refresh(student)
 
     existing = (
-        db.query(models.ClassMember)
-        .filter_by(classroom_id=classroom.id, email=email)
+        db.query(models.Enrolment)
+        .filter_by(student_id=student.id, classroom_id=classroom.id, left_on=None)
         .first()
     )
     if existing is not None:
-        raise HTTPException(400, "That address is already on the roster")
+        raise HTTPException(400, "That student is already in this class")
 
-    # Link straight away if they have already signed up; otherwise the
-    # invitation is claimed the first time they do.
-    account = db.query(models.User).filter_by(email=email).first()
-    member = models.ClassMember(
+    enrolment = models.Enrolment(
+        school_id=classroom.school_id,
+        student_id=student.id,
         classroom_id=classroom.id,
-        email=email,
-        user_id=account.id if account else None,
-        joined_at=datetime.utcnow() if account else None,
+        academic_year_id=classroom.academic_year_id,
+        roll_number=(payload.roll_number or "").strip() or None,
     )
-    db.add(member)
+    db.add(enrolment)
     db.commit()
-    db.refresh(member)
-    return schemas.ClassMemberOut(
-        id=member.id,
-        email=member.email,
-        display_name=account.display_name if account else None,
-        joined=member.user_id is not None,
-        added_at=member.added_at,
+    db.refresh(enrolment)
+
+    return schemas.EnrolmentOut(
+        id=enrolment.id,
+        student_id=student.id,
+        full_name=student.full_name,
+        email=student.email,
+        admission_number=student.admission_number,
+        roll_number=enrolment.roll_number,
+        has_account=student.user_id is not None,
+        enrolled_on=enrolment.enrolled_on,
     )
 
 
-@app.delete("/api/classes/{classroom_id}/members/{member_id}")
+@app.delete("/api/classes/{classroom_id}/members/{enrolment_id}")
 def remove_member(
     classroom_id: int,
-    member_id: int,
+    enrolment_id: int,
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.current_user),
 ):
+    """Ends the enrolment rather than deleting it: the student record and
+    anything hanging off it belongs to the school, not to this class."""
     classroom = _taught_classroom(db, classroom_id, user)
-    member = db.get(models.ClassMember, member_id)
-    if member is None or member.classroom_id != classroom.id:
+    enrolment = db.get(models.Enrolment, enrolment_id)
+    if enrolment is None or enrolment.classroom_id != classroom.id:
         raise HTTPException(404, "Not on this roster")
-    db.delete(member)
+    enrolment.left_on = datetime.utcnow()
     db.commit()
     return {"ok": True}
 
@@ -1181,7 +1236,8 @@ def class_progress(
         .all()
     )
 
-    member_ids = {m.user_id for m in classroom.members if m.user_id}
+    active = [e for e in classroom.enrolments if e.left_on is None]
+    member_ids = {e.student.user_id for e in active if e.student.user_id}
     by_student: dict[int, dict] = {}
     for attempt, test, student in rows:
         if student.id not in member_ids:
@@ -1203,15 +1259,16 @@ def class_progress(
         )
 
     students = []
-    for member in classroom.members:
-        entry = by_student.get(member.user_id) if member.user_id else None
+    for enrolment in active:
+        student_row = enrolment.student
+        entry = by_student.get(student_row.user_id) if student_row.user_id else None
         attempts = entry["attempts"] if entry else []
         scored = [a["percent"] for a in attempts if a["percent"] is not None]
         students.append(
             {
-                "email": member.email,
-                "name": (entry or {}).get("name"),
-                "joined": member.user_id is not None,
+                "email": student_row.email,
+                "name": (entry or {}).get("name") or student_row.full_name,
+                "joined": student_row.user_id is not None,
                 "attempts": sorted(attempts, key=lambda a: a["submitted_at"] or 0),
                 "average_percent": round(sum(scored) / len(scored)) if scored else None,
             }

@@ -77,7 +77,7 @@ _ADDED_COLUMNS = {
         "classroom_id": "INTEGER",
         "school_id": "INTEGER",
     },
-    "classrooms": {"school_id": "INTEGER"},
+    "classrooms": {"school_id": "INTEGER", "academic_year_id": "INTEGER"},
     "tests": {"owner_id": "INTEGER", "school_id": "INTEGER"},
     "test_attempts": {"user_id": "INTEGER"},
     "users": {"is_teacher": "BOOLEAN DEFAULT FALSE", "school_id": "INTEGER"},
@@ -166,4 +166,123 @@ def backfill_default_school() -> None:
             connection.execute(
                 text(f"UPDATE {table} SET school_id = :sid WHERE school_id IS NULL"),
                 {"sid": school_id},
+            )
+
+
+def backfill_academic_structure() -> None:
+    """Gives every school a current academic year, and moves any class
+    roster onto the student/enrolment model.
+
+    Rosters used to be a list of email addresses on a class. That works
+    until anything academic needs to hang off the person rather than the
+    invitation - attendance, marks, a report card, a sibling sharing a
+    guardian. Each old row becomes a Student (identified by email, exactly
+    as before) plus an Enrolment placing them in that class.
+
+    Idempotent: with a current year on every school and class_members
+    drained, it does nothing.
+    """
+    from sqlalchemy import text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "schools" not in tables or "academic_years" not in tables:
+        return
+
+    now = datetime.utcnow()
+    with engine.begin() as connection:
+        schools = [
+            row[0] for row in connection.execute(text("SELECT id FROM schools")).all()
+        ]
+        for school_id in schools:
+            year_id = connection.execute(
+                text(
+                    "SELECT id FROM academic_years "
+                    "WHERE school_id = :s AND is_current = TRUE"
+                ),
+                {"s": school_id},
+            ).scalar()
+            if year_id is None:
+                # Indian academic years run April to March; the label is a
+                # starting point a school can rename, not a claim.
+                start = now.year if now.month >= 4 else now.year - 1
+                connection.execute(
+                    text(
+                        "INSERT INTO academic_years "
+                        "(school_id, name, is_current, created_at) "
+                        "VALUES (:s, :n, TRUE, :now)"
+                    ),
+                    {"s": school_id, "n": f"{start}-{str(start + 1)[-2:]}", "now": now},
+                )
+                year_id = connection.execute(
+                    text(
+                        "SELECT id FROM academic_years "
+                        "WHERE school_id = :s AND is_current = TRUE"
+                    ),
+                    {"s": school_id},
+                ).scalar()
+
+            connection.execute(
+                text(
+                    "UPDATE classrooms SET academic_year_id = :y "
+                    "WHERE school_id = :s AND academic_year_id IS NULL"
+                ),
+                {"y": year_id, "s": school_id},
+            )
+
+        if "class_members" not in tables:
+            return
+
+        # Read the old roster directly: the model is gone, which is the
+        # point - nothing should still be writing to it.
+        rows = connection.execute(
+            text(
+                "SELECT cm.id, cm.classroom_id, cm.email, cm.user_id, "
+                "       c.school_id, c.academic_year_id "
+                "  FROM class_members cm "
+                "  JOIN classrooms c ON c.id = cm.classroom_id"
+            )
+        ).all()
+        for member_id, classroom_id, email, user_id, school_id, year_id in rows:
+            student_id = connection.execute(
+                text(
+                    "SELECT id FROM students WHERE school_id = :s AND email = :e"
+                ),
+                {"s": school_id, "e": email},
+            ).scalar()
+            if student_id is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO students "
+                        "(school_id, full_name, email, user_id, status, created_at) "
+                        "VALUES (:s, :n, :e, :u, 'active', :now)"
+                    ),
+                    # No name was ever collected, so the address stands in
+                    # until somebody edits it.
+                    {"s": school_id, "n": email, "e": email, "u": user_id, "now": now},
+                )
+                student_id = connection.execute(
+                    text("SELECT id FROM students WHERE school_id = :s AND email = :e"),
+                    {"s": school_id, "e": email},
+                ).scalar()
+
+            exists = connection.execute(
+                text(
+                    "SELECT 1 FROM enrolments "
+                    "WHERE student_id = :st AND classroom_id = :c"
+                ),
+                {"st": student_id, "c": classroom_id},
+            ).first()
+            if not exists:
+                connection.execute(
+                    text(
+                        "INSERT INTO enrolments "
+                        "(school_id, student_id, classroom_id, academic_year_id, enrolled_on) "
+                        "VALUES (:s, :st, :c, :y, :now)"
+                    ),
+                    {"s": school_id, "st": student_id, "c": classroom_id,
+                     "y": year_id, "now": now},
+                )
+            connection.execute(
+                text("DELETE FROM class_members WHERE id = :id"), {"id": member_id}
             )

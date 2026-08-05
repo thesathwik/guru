@@ -244,18 +244,24 @@ class ClassroomOut(BaseModel):
         from_attributes = True
 
 
-class ClassMemberCreate(BaseModel):
-    email: str
+class EnrolmentCreate(BaseModel):
+    full_name: str | None = None
+    email: str | None = None
+    admission_number: str | None = None
+    roll_number: str | None = None
 
 
-class ClassMemberOut(BaseModel):
+class EnrolmentOut(BaseModel):
     id: int
-    email: str
-    display_name: str | None = None
-    # False means invited but not yet signed up; the invitation is claimed
-    # the first time that address signs in.
-    joined: bool = False
-    added_at: datetime | None = None
+    student_id: int
+    full_name: str
+    email: str | None = None
+    admission_number: str | None = None
+    roll_number: str | None = None
+    # Whether this person has signed in yet. Incidental to being enrolled:
+    # the record is the student, the account is only how they log in.
+    has_account: bool = False
+    enrolled_on: datetime | None = None
 
 
 class AdminUserOut(BaseModel):

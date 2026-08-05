@@ -976,7 +976,7 @@ async function openClassDetail(c) {
   ]);
 
   const scores = {};
-  for (const s of progress.students) scores[s.email] = s;
+  for (const s of progress.students) scores[s.email || s.name] = s;
 
   listEl.innerHTML = "";
   const panel = document.createElement("div");
@@ -984,16 +984,19 @@ async function openClassDetail(c) {
   panel.innerHTML = `
     <div class="test-take-header">
       <div><h3>${escapeHtml(c.name)}</h3>
-        <p class="hint">Add students by email. They can be added before they sign up &mdash;
-        the invitation is claimed the first time that address signs in.</p></div>
+        <p class="hint">A student is a person on the roll, not an account. Add them with
+        or without an email; if you give one, their login connects to this record the
+        first time they sign in.</p></div>
       <button type="button" class="secondary-button back-to-classes">Back</button>
     </div>
     <form class="add-member">
-      <input type="email" placeholder="student@example.com" required />
+      <input name="full_name" type="text" placeholder="Student name" />
+      <input name="email" type="email" placeholder="Email (optional)" />
+      <input name="roll_number" type="text" placeholder="Roll no." class="roll-input" />
       <button type="submit">Add student</button>
     </form>
     <table class="materials-table">
-      <thead><tr><th>Student</th><th>Status</th><th>Tests taken</th><th>Average</th><th></th></tr></thead>
+      <thead><tr><th>Roll</th><th>Student</th><th>Account</th><th>Tests taken</th><th>Average</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <div class="member-error test-error" hidden></div>
@@ -1001,11 +1004,16 @@ async function openClassDetail(c) {
 
   const tbody = panel.querySelector("tbody");
   for (const m of members) {
-    const s = scores[m.email] || {};
+    const s = scores[m.email || m.full_name] || {};
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${escapeHtml(m.display_name || m.email)}<br><span class="test-list-meta">${escapeHtml(m.email)}</span></td>
-      <td><span class="status ${m.joined ? "status-processed" : "status-uploaded"}">${m.joined ? "joined" : "invited"}</span></td>
+      <td>${escapeHtml(m.roll_number || "—")}</td>
+      <td>${escapeHtml(m.full_name)}${
+        m.email ? `<br><span class="test-list-meta">${escapeHtml(m.email)}</span>` : ""
+      }</td>
+      <td><span class="status ${m.has_account ? "status-processed" : "status-uploaded"}" title="${
+        m.has_account ? "This student has signed in." : "Enrolled. They can sign in with this address whenever they like."
+      }">${m.has_account ? "signed in" : "no account"}</span></td>
       <td>${(s.attempts || []).length}</td>
       <td>${s.average_percent !== null && s.average_percent !== undefined ? s.average_percent + "%" : "—"}</td>
       <td><span class="delete-link">remove</span></td>
@@ -1020,16 +1028,18 @@ async function openClassDetail(c) {
   panel.querySelector(".back-to-classes").addEventListener("click", renderClasses);
   panel.querySelector(".add-member").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const input = e.target.querySelector("input");
     const errorEl = panel.querySelector(".member-error");
     showError(errorEl, null);
+    const body = {};
+    for (const field of e.target.querySelectorAll("input[name]")) {
+      body[field.name] = field.value.trim();
+    }
     try {
       await api(`/classes/${c.id}/members`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: input.value.trim() }),
+        body: JSON.stringify(body),
       });
-      input.value = "";
       openClassDetail(c);
     } catch (err) {
       showError(errorEl, err.message);

@@ -1135,3 +1135,11 @@ button:disabled {
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+
+.add-member {
+  flex-wrap: wrap;
+}
+
+.add-member .roll-input {
+  flex: 0 0 90px;
+}

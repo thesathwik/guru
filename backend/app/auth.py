@@ -132,15 +132,21 @@ def _claim_school_invite(db: Session, user: models.User) -> None:
         .first()
     )
     if invite is None:
-        # A class roster is an implicit invitation to that class's school -
-        # a teacher adding a student should not also have to invite them.
-        member = (
-            db.query(models.ClassMember)
-            .filter(models.ClassMember.email == user.email)
-            .first()
+        # Being on a school's roll is an implicit invitation to it - an
+        # admissions clerk entering a student should not also have to send
+        # a separate invitation. Same for a guardian on file.
+        student = (
+            db.query(models.Student).filter(models.Student.email == user.email).first()
         )
-        if member is not None and member.classroom is not None:
-            user.school_id = member.classroom.school_id
+        if student is not None:
+            user.school_id = student.school_id
+            db.commit()
+            return
+        guardian = (
+            db.query(models.Guardian).filter(models.Guardian.email == user.email).first()
+        )
+        if guardian is not None:
+            user.school_id = guardian.school_id
             db.commit()
         return
 
@@ -152,31 +158,27 @@ def _claim_school_invite(db: Session, user: models.User) -> None:
 
 
 def _claim_invitations(db: Session, user: models.User) -> None:
-    """Attaches this account to any class it was invited to by email.
+    """Attaches this account to the student or guardian record it belongs to.
 
-    A teacher builds a roster before the students have signed up, so the
-    invitation is stored against an address. This is where it becomes a
-    membership - which also means a student who registers later, or who is
-    added after they registered, ends up in the class either way.
+    A school records people long before - or entirely without - anyone
+    signing in. The record is the person; this account is merely a way for
+    them to log in, matched on the address the school already holds. It
+    also means a student entered after they registered still connects.
     """
     if not user.email:
         return
 
-    pending = (
-        db.query(models.ClassMember)
-        .filter(
-            models.ClassMember.email == user.email,
-            models.ClassMember.user_id.is_(None),
-        )
-        .all()
-    )
-    if not pending:
-        return
-
-    for member in pending:
-        member.user_id = user.id
-        member.joined_at = datetime.utcnow()
-    db.commit()
+    linked = False
+    for model in (models.Student, models.Guardian):
+        for row in (
+            db.query(model)
+            .filter(model.email == user.email, model.user_id.is_(None))
+            .all()
+        ):
+            row.user_id = user.id
+            linked = True
+    if linked:
+        db.commit()
 
 
 def _development_user(db: Session) -> models.User:
