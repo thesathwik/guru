@@ -16,6 +16,44 @@ from sqlalchemy.orm import relationship
 from .database import Base
 
 
+class School(Base):
+    """A tenant. Everything else belongs to exactly one.
+
+    Tenant isolation is the one boundary that must never leak, so
+    school_id is carried on every content row rather than inferred by
+    joining back to the subject. A filter you can forget is a filter that
+    will eventually be forgotten; this way the check is local to the
+    query that needs it.
+    """
+
+    __tablename__ = "schools"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SchoolInvite(Base):
+    """An address invited to a school, and what it may do when it arrives.
+
+    Same shape as a class roster: keyed on email so a school can be set up
+    before anyone has signed in, and claimed on first sign-in.
+    """
+
+    __tablename__ = "school_invites"
+
+    id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
+    email = Column(String, nullable=False)  # lowercased
+    is_teacher = Column(Boolean, nullable=False, default=False)
+    is_admin = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    claimed_at = Column(DateTime, nullable=True)
+
+    school = relationship("School")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -23,9 +61,13 @@ class User(Base):
     # Identity Platform's subject id. Keyed on this rather than email
     # because an email can be changed or reassigned; the uid cannot.
     auth_uid = Column(String, unique=True, nullable=False, index=True)
+    # NULL until they create or are invited into one. Such a user can sign
+    # in and sees nothing - there is no content outside a school.
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=True)
     email = Column(String, nullable=True)
     display_name = Column(String, nullable=True)
-    # Who may add to the shared library. Seeded from ADMIN_EMAILS.
+    # Administers their own school's library and staff. Not the platform:
+    # that is PLATFORM_ADMIN_EMAILS, and deliberately not stored here.
     is_admin = Column(Boolean, nullable=False, default=False)
     # Set by an administrator. A teacher can run classes of their own; it
     # grants nothing over the shared library or over anyone else's class.
@@ -83,6 +125,7 @@ class Classroom(Base):
     __tablename__ = "classrooms"
 
     id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
     name = Column(String, nullable=False)
     teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -121,12 +164,12 @@ class Subject(Base):
     __tablename__ = "subjects"
 
     id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    # NULL means the shared library: visible to everyone. Set means a
-    # personal upload, visible only to that user. Existing rows are all
-    # NULL, so the library everyone already sees stays shared.
+    # NULL means the school's own library: visible to everyone in it. Set
+    # means a personal upload, visible only to that user.
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     # Set means the subject belongs to a class: visible to its roster and
     # its teacher rather than to everyone. Scoping classes at the subject
@@ -146,10 +189,10 @@ class Material(Base):
     __tablename__ = "materials"
 
     id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
-    # NULL means the shared library: visible to everyone. Set means a
-    # personal upload, visible only to that user. Existing rows are all
-    # NULL, so the library everyone already sees stays shared.
+    # NULL means the school's library: visible to everyone in it. Set means
+    # a personal upload, visible only to that user.
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     filename = Column(String, nullable=False)
     raw_path = Column(String, nullable=False)
@@ -193,6 +236,7 @@ class Chunk(Base):
     # subject directly, without joining through materials - this is what
     # keeps every subject's tutor scoped to only its own material in a
     # single shared embeddings table.
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
     # Denormalised from material.owner_id for the same reason subject_id is:
@@ -219,6 +263,7 @@ class MaterialImage(Base):
     __tablename__ = "material_images"
 
     id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -255,6 +300,7 @@ class Test(Base):
     __tablename__ = "tests"
 
     id = Column(Integer, primary_key=True)
+    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
     # NULL only for tests generated before sign-in existed.
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)

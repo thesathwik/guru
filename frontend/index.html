@@ -24,6 +24,24 @@
     </div>
   </div>
 
+  <div id="onboard-screen" class="signin-screen" hidden>
+    <div class="signin-card">
+      <h1>One more step</h1>
+      <p class="signin-tagline">
+        Your material lives inside a school. Create one, or ask an administrator
+        to invite this address.
+      </p>
+      <form id="onboard-form">
+        <input id="onboard-name" type="text" placeholder="School or institute name" required />
+        <button type="submit" id="onboard-submit">Create school</button>
+      </form>
+      <p class="signin-switch">
+        Invited already? <a href="#" id="onboard-recheck">Check again</a>
+      </p>
+      <div id="onboard-error" class="test-error" hidden></div>
+    </div>
+  </div>
+
   <div class="layout" id="app-layout" hidden>
     <aside class="sidebar">
       <h1>Guru</h1>
@@ -35,6 +53,9 @@
       <ul id="subject-list" class="subject-list"></ul>
 
       <div class="account-box">
+        <div class="account-who">
+          <span id="account-school" class="account-school"></span>
+        </div>
         <div class="account-who">
           <span id="account-name"></span>
           <span id="account-role" class="account-role" hidden>admin</span>

@@ -187,7 +187,7 @@ MAX_IMAGES = int(os.environ.get("TUTOR_MAX_IMAGES", "3"))
 
 def score_images(
     db, subject_id: int, query_vector: list[float], query: str = "",
-    user_id: int | None = None,
+    user_id: int | None = None, school_id: int | None = None,
 ) -> tuple[list[tuple[float, object]], bool]:
     """Ranks a subject's captioned figures against the question, best
     first, using the same two-stage pipeline as text retrieval: dense +
@@ -218,6 +218,11 @@ def score_images(
             # someone else's material.
             (models.MaterialImage.owner_id.is_(None))
             | (models.MaterialImage.owner_id == user_id),
+        )
+        .filter(
+            models.MaterialImage.school_id == school_id
+            if school_id is not None
+            else True
         )
         .all()
     )
@@ -274,7 +279,7 @@ def score_images(
 
 def _relevant_images(
     db, subject_id: int, query_vector: list[float], query: str = "",
-    user_id: int | None = None,
+    user_id: int | None = None, school_id: int | None = None,
 ) -> list[dict]:
     """Picks the figures whose captions genuinely match the question.
 
@@ -298,7 +303,7 @@ def _relevant_images(
     """
     import statistics
 
-    scored, reranked = score_images(db, subject_id, query_vector, query, user_id)
+    scored, reranked = score_images(db, subject_id, query_vector, query, user_id, school_id)
     if not scored:
         return []
 
@@ -349,10 +354,11 @@ def answer_question(
     user=None,
 ) -> dict:
     user_id = user.id if user is not None else None
+    school_id = user.school_id if user is not None else None
     query_vector = embeddings.embed_query(question)
     matches = embeddings.search_chunks(
         db, subject.id, question, top_k=top_k, query_vector=query_vector,
-        user_id=user_id,
+        user_id=user_id, school_id=school_id,
     )
 
     messages = [
@@ -388,5 +394,7 @@ def answer_question(
             }
             for m in matches
         ],
-        "images": _relevant_images(db, subject.id, query_vector, question, user_id),
+        "images": _relevant_images(
+            db, subject.id, query_vector, question, user_id, school_id
+        ),
     }

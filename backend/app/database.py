@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -61,18 +62,25 @@ _ADDED_COLUMNS = {
         "page": "INTEGER",
         "source": "VARCHAR DEFAULT 'native'",
         "owner_id": "INTEGER",
+        "school_id": "INTEGER",
     },
     "material_images": {
         "caption": "TEXT",
         "caption_embedding": "TEXT",
         "owner_id": "INTEGER",
+        "school_id": "INTEGER",
     },
     # Ownership arrived after these tables existed. NULL is the shared
     # library, so every existing row keeps being visible to everyone.
-    "subjects": {"owner_id": "INTEGER", "classroom_id": "INTEGER"},
-    "tests": {"owner_id": "INTEGER"},
+    "subjects": {
+        "owner_id": "INTEGER",
+        "classroom_id": "INTEGER",
+        "school_id": "INTEGER",
+    },
+    "classrooms": {"school_id": "INTEGER"},
+    "tests": {"owner_id": "INTEGER", "school_id": "INTEGER"},
     "test_attempts": {"user_id": "INTEGER"},
-    "users": {"is_teacher": "BOOLEAN DEFAULT FALSE"},
+    "users": {"is_teacher": "BOOLEAN DEFAULT FALSE", "school_id": "INTEGER"},
     "materials": {
         "page_count": "INTEGER",
         "scanned_page_count": "INTEGER",
@@ -80,6 +88,7 @@ _ADDED_COLUMNS = {
         "processing_started_at": "TIMESTAMP",
         "attempts": "INTEGER DEFAULT 0",
         "owner_id": "INTEGER",
+        "school_id": "INTEGER",
     },
 }
 
@@ -102,3 +111,59 @@ def apply_migrations() -> None:
                     connection.execute(
                         text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
                     )
+
+
+# The name given to the tenant that everything predating multi-tenancy is
+# moved into. Configurable so a deployment can call it what it actually is.
+DEFAULT_SCHOOL_NAME = os.environ.get("DEFAULT_SCHOOL_NAME", "Default School")
+
+
+def backfill_default_school() -> None:
+    """Puts every pre-tenancy row into one school.
+
+    Multi-tenancy arrived after there was data, and school_id has to be
+    set on all of it or that content becomes unreachable - visible to no
+    tenant at all. Runs on startup and is idempotent: with nothing left
+    unassigned it does nothing, so it costs one count query per boot.
+    """
+    from sqlalchemy import text
+
+    scoped = ("users", "classrooms", "subjects", "materials", "chunks",
+              "material_images", "tests")
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    present = [t for t in scoped if t in tables]
+    if not present:
+        return
+
+    with engine.begin() as connection:
+        orphaned = any(
+            connection.execute(
+                text(f"SELECT 1 FROM {table} WHERE school_id IS NULL LIMIT 1")
+            ).first()
+            for table in present
+        )
+        if not orphaned:
+            return
+
+        school_id = connection.execute(
+            text("SELECT id FROM schools WHERE slug = :slug"), {"slug": "default"}
+        ).scalar()
+        if school_id is None:
+            connection.execute(
+                text(
+                    "INSERT INTO schools (name, slug, created_at) "
+                    "VALUES (:name, 'default', :now)"
+                ),
+                {"name": DEFAULT_SCHOOL_NAME, "now": datetime.utcnow()},
+            )
+            school_id = connection.execute(
+                text("SELECT id FROM schools WHERE slug = 'default'")
+            ).scalar()
+
+        for table in present:
+            connection.execute(
+                text(f"UPDATE {table} SET school_id = :sid WHERE school_id IS NULL"),
+                {"sid": school_id},
+            )

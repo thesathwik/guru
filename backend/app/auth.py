@@ -20,11 +20,22 @@ from .database import get_db
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
 
-# Comma-separated emails allowed to manage the shared library. Everyone
-# else can only add material for themselves.
+# Emails that administer *their own school* on arrival. A school normally
+# grows its own admins by invitation; this is the bootstrap for the first
+# one, and for the tenant that predates multi-tenancy.
 ADMIN_EMAILS = {
     email.strip().lower()
     for email in os.environ.get("ADMIN_EMAILS", "").split(",")
+    if email.strip()
+}
+
+# Operators of the platform itself, as opposed to administrators of a
+# school. Kept in configuration rather than the database on purpose: the
+# ability to cross tenant boundaries should not be grantable from inside
+# the product.
+PLATFORM_ADMIN_EMAILS = {
+    email.strip().lower()
+    for email in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",")
     if email.strip()
 }
 
@@ -96,9 +107,48 @@ def _user_from_claims(db: Session, claims: dict) -> models.User:
 
     user.last_seen_at = datetime.utcnow()
     db.commit()
+    _claim_school_invite(db, user)
     _claim_invitations(db, user)
     db.refresh(user)
     return user
+
+
+def _claim_school_invite(db: Session, user: models.User) -> None:
+    """Places a newly arrived account into the school that invited it.
+
+    Someone already in a school stays there: an account belongs to one
+    tenant, and silently moving it would take its work with it.
+    """
+    if not user.email or user.school_id is not None:
+        return
+
+    invite = (
+        db.query(models.SchoolInvite)
+        .filter(
+            models.SchoolInvite.email == user.email,
+            models.SchoolInvite.claimed_at.is_(None),
+        )
+        .order_by(models.SchoolInvite.created_at)
+        .first()
+    )
+    if invite is None:
+        # A class roster is an implicit invitation to that class's school -
+        # a teacher adding a student should not also have to invite them.
+        member = (
+            db.query(models.ClassMember)
+            .filter(models.ClassMember.email == user.email)
+            .first()
+        )
+        if member is not None and member.classroom is not None:
+            user.school_id = member.classroom.school_id
+            db.commit()
+        return
+
+    user.school_id = invite.school_id
+    user.is_teacher = user.is_teacher or invite.is_teacher
+    user.is_admin = user.is_admin or invite.is_admin
+    invite.claimed_at = datetime.utcnow()
+    db.commit()
 
 
 def _claim_invitations(db: Session, user: models.User) -> None:
@@ -134,7 +184,7 @@ def _development_user(db: Session) -> models.User:
     if user is None:
         user = models.User(
             auth_uid="dev", email="dev@localhost", display_name="Developer",
-            is_admin=True,
+            is_admin=True, is_teacher=True,
         )
         db.add(user)
         db.commit()
@@ -158,8 +208,21 @@ def current_user(
 
 def require_admin(user: models.User = Depends(current_user)) -> models.User:
     if not user.is_admin:
-        raise HTTPException(403, "Only an administrator can change the shared library")
+        raise HTTPException(403, "Only an administrator can do that")
     return user
+
+
+def require_school(user: models.User = Depends(current_user)) -> models.User:
+    """For anything that operates on content: there is none outside a
+    school, so this fails early with something actionable rather than
+    returning empty lists everywhere."""
+    if user.school_id is None:
+        raise HTTPException(409, "Create or join a school first")
+    return user
+
+
+def is_platform_admin(user: models.User) -> bool:
+    return bool(user.email and user.email.lower() in PLATFORM_ADMIN_EMAILS)
 
 
 def require_teacher(user: models.User = Depends(current_user)) -> models.User:

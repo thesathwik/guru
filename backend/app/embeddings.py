@@ -227,6 +227,7 @@ def search_chunks(
     top_k: int = 5,
     query_vector: list[float] | None = None,
     user_id: int | None = None,
+    school_id: int | None = None,
 ) -> list[dict]:
     """Two-stage retrieval over a single subject's chunks.
 
@@ -249,14 +250,21 @@ def search_chunks(
     `query_vector` lets a caller that already embedded the query reuse
     it instead of paying for a second embedding pass.
 
-    `user_id` scopes retrieval to the shared library plus that user's own
-    material. It defaults to None - shared only - so a caller that forgets
+    `user_id` scopes retrieval to the school library plus that user's own
+    material. It defaults to None - library only - so a caller that forgets
     to pass it retrieves too little rather than someone else's notes.
+
+    `school_id` is the tenant boundary and is checked here as well as at
+    the endpoint. Subject ids are unique across tenants, so this is
+    redundant today - which is the point: it stays correct if some future
+    caller reaches this without having authorised the subject first.
     """
     from . import models
     from . import reranker
 
     query_set = db.query(models.Chunk).filter_by(subject_id=subject_id)
+    if school_id is not None:
+        query_set = query_set.filter(models.Chunk.school_id == school_id)
     if user_id is None:
         query_set = query_set.filter(models.Chunk.owner_id.is_(None))
     else:

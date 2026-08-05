@@ -181,8 +181,42 @@ class LearnerProfileOut(LearnerProfileIn):
         from_attributes = True
 
 
+class SchoolCreate(BaseModel):
+    name: str
+
+
+class SchoolOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    created_at: datetime
+    member_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SchoolInviteCreate(BaseModel):
+    email: str
+    is_teacher: bool = False
+    is_admin: bool = False
+
+
+class SchoolInviteOut(BaseModel):
+    id: int
+    email: str
+    is_teacher: bool = False
+    is_admin: bool = False
+    created_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
 class MeOut(BaseModel):
     id: int
+    school_id: int | None = None
+    school_name: str | None = None
     email: str | None = None
     display_name: str | None = None
     is_admin: bool = False

@@ -800,6 +800,7 @@ function fillProfileForm(profile) {
 
 async function loadMe() {
   me = await api("/me");
+  document.getElementById("account-school").textContent = me.school_name || "";
   document.getElementById("account-name").textContent =
     me.display_name || me.email || "Signed in";
   document.getElementById("account-role").hidden = !me.is_admin;
@@ -844,6 +845,7 @@ document.getElementById("signin-form").addEventListener("submit", async (e) => {
 
 document.getElementById("sign-out").addEventListener("click", () => {
   Auth.signOut();
+  onboardScreenEl.hidden = true;
   activeSubjectId = null;
   me = null;
   // Blob URLs belong to the signed-out session; do not leave another
@@ -1088,7 +1090,49 @@ document.getElementById("class-form").addEventListener("submit", async (e) => {
   }
 });
 
+const onboardScreenEl = document.getElementById("onboard-screen");
+
+function showOnboard() {
+  signInScreenEl.hidden = true;
+  onboardScreenEl.hidden = false;
+  appLayoutEl.hidden = true;
+  if (pollTimer) clearInterval(pollTimer);
+}
+
+document.getElementById("onboard-recheck").addEventListener("click", async (e) => {
+  e.preventDefault();
+  await start();
+});
+
+document.getElementById("onboard-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById("onboard-error");
+  const button = document.getElementById("onboard-submit");
+  showError(errorEl, null);
+  button.disabled = true;
+  try {
+    await api("/school", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: document.getElementById("onboard-name").value.trim() }),
+    });
+    await start();
+  } catch (err) {
+    showError(errorEl, err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 async function start() {
+  // Nothing exists outside a school, so an account without one is sent to
+  // create or wait for an invitation rather than into an empty app.
+  me = await api("/me");
+  if (!me.school_id) {
+    showOnboard();
+    return;
+  }
+  onboardScreenEl.hidden = true;
   showApp();
   await loadMe();
   await loadClasses();

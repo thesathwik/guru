@@ -15,12 +15,20 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from . import auth, embeddings, models, ocr, preprocessing, schemas, testgen, tutor, workqueue
-from .database import Base, SessionLocal, apply_migrations, engine, get_db
+from .database import (
+    Base,
+    SessionLocal,
+    apply_migrations,
+    backfill_default_school,
+    engine,
+    get_db,
+)
 from .storage import get_storage
 from .utils import slugify
 
 Base.metadata.create_all(bind=engine)
 apply_migrations()
+backfill_default_school()
 
 app = FastAPI(title="Guru - LLM Tutor")
 
@@ -52,9 +60,13 @@ class ProcessingError(Exception):
 
 def _classroom_ids(db, user: models.User) -> set[int]:
     """Classes this user belongs to, whether teaching or enrolled."""
+    if user.school_id is None:
+        return set()
     taught = {
         row.id
-        for row in db.query(models.Classroom.id).filter_by(teacher_id=user.id).all()
+        for row in db.query(models.Classroom.id)
+        .filter_by(teacher_id=user.id, school_id=user.school_id)
+        .all()
     }
     enrolled = {
         row.classroom_id
@@ -66,14 +78,19 @@ def _classroom_ids(db, user: models.User) -> set[int]:
 
 
 def _can_see(row, user: models.User, classroom_ids: set[int] | None = None) -> bool:
-    """Three tiers, checked in order of how narrow they are.
+    """Tenant first, then the three tiers within it.
 
-    A row belonging to a class is visible to that class; otherwise the
-    original rule stands - owner_id NULL is the shared library, and a set
-    owner_id is personal. Materials and figures have no classroom of their
-    own: they inherit it from the subject they sit in, which is what keeps
-    the retrieval filter untouched.
+    The school check is unconditional and comes before everything else: no
+    combination of ownership, class membership or role should ever reach
+    across tenants, so it is not something the later branches can override.
+
+    Within a school: a row belonging to a class is visible to that class;
+    otherwise owner_id NULL is the school's library and a set owner_id is
+    personal. Materials and figures have no classroom of their own - they
+    inherit it from their subject, which is what keeps retrieval simple.
     """
+    if user.school_id is None or getattr(row, "school_id", None) != user.school_id:
+        return False
     if getattr(row, "classroom_id", None) is not None:
         return row.classroom_id in (classroom_ids or set())
     return row.owner_id is None or row.owner_id == user.id
@@ -144,6 +161,7 @@ def _store_images(db, storage, subject, material, raw_bytes: bytes) -> None:
         caption_embedding = json.dumps(next(vector_iter)) if image["caption"] else None
         db.add(
             models.MaterialImage(
+                school_id=subject.school_id,
                 subject_id=subject.id,
                 material_id=material.id,
                 owner_id=material.owner_id,
@@ -239,6 +257,7 @@ def _process_material(material_id: int) -> None:
             for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
                 db.add(
                     models.Chunk(
+                        school_id=subject.school_id,
                         subject_id=subject.id,
                         material_id=material.id,
                         # Carried onto the chunk so retrieval can exclude
@@ -299,6 +318,7 @@ def create_subject(
     # a class they run; anyone else creates a subject only they can see.
     shared = bool(payload.shared and user.is_admin) and classroom_id is None
     subject = models.Subject(
+        school_id=user.school_id,
         name=name,
         slug=slug,
         classroom_id=classroom_id,
@@ -336,9 +356,11 @@ def list_subjects(
     if mine:
         conditions.append(models.Subject.classroom_id.in_(mine))
 
+    if user.school_id is None:
+        return []
     subjects = (
         db.query(models.Subject)
-        .filter(or_(*conditions))
+        .filter(models.Subject.school_id == user.school_id, or_(*conditions))
         .order_by(models.Subject.created_at.desc())
         .all()
     )
@@ -419,6 +441,7 @@ async def upload_material(
     # notes beside the class textbook.
     shared_upload = _publishes_to_class(subject, user)
     material = models.Material(
+        school_id=subject.school_id,
         subject_id=subject.id,
         owner_id=None if shared_upload else user.id,
         filename=file.filename,
@@ -460,7 +483,7 @@ def delete_material(
     user: models.User = Depends(auth.current_user),
 ):
     material = db.get(models.Material, material_id)
-    if material is None or not _can_see(material, user):
+    if material is None or material.school_id != user.school_id or not _can_see(material, user):
         raise HTTPException(404, "Material not found")
     if not _can_edit(material, user):
         raise HTTPException(403, "This material is not yours to delete")
@@ -480,7 +503,9 @@ def search_subject(
     _visible_subject(db, subject_id, user)
     if not q.strip():
         raise HTTPException(400, "Query 'q' is required")
-    return embeddings.search_chunks(db, subject_id, q, top_k=top_k, user_id=user.id)
+    return embeddings.search_chunks(
+        db, subject_id, q, top_k=top_k, user_id=user.id, school_id=user.school_id
+    )
 
 
 @app.get("/api/subjects/{subject_id}/figures")
@@ -507,6 +532,7 @@ def list_figures(
         db.query(models.MaterialImage)
         .filter(
             models.MaterialImage.subject_id == subject_id,
+            models.MaterialImage.school_id == user.school_id,
             (models.MaterialImage.owner_id.is_(None))
             | (models.MaterialImage.owner_id == user.id),
         )
@@ -542,7 +568,9 @@ def list_figures(
         }
 
     query_vector = embeddings.embed_query(q)
-    scored, reranked = tutor.score_images(db, subject_id, query_vector, q, user.id)
+    scored, reranked = tutor.score_images(
+        db, subject_id, query_vector, q, user.id, user.school_id
+    )
     shown = {image["id"] for image in tutor._relevant_images(db, subject_id, query_vector, q)}
     return {
         "total": total,
@@ -582,7 +610,7 @@ def get_image(
     from fastapi.responses import Response
 
     image = db.get(models.MaterialImage, image_id)
-    if image is None or not _can_see(image, user):
+    if image is None or image.school_id != user.school_id or not _can_see(image, user):
         raise HTTPException(404, "Image not found")
     return Response(
         content=get_storage().read(image.path),
@@ -613,6 +641,8 @@ def chat_with_subject(
 
 def _own_test(db, test_id: int, user: models.User) -> models.Test:
     test = db.get(models.Test, test_id)
+    if test is not None and test.school_id != user.school_id:
+        raise HTTPException(404, "Test not found")
     # owner_id NULL only for tests made before sign-in existed; they stay
     # reachable rather than becoming orphans nobody can open.
     if test is None or not (test.owner_id is None or test.owner_id == user.id):
@@ -701,6 +731,7 @@ def create_test(
         .filter(
             models.Material.subject_id == subject_id,
             models.Material.id.in_(payload.material_ids or []),
+            models.Material.school_id == user.school_id,
             models.Material.status == "processed",
             (models.Material.owner_id.is_(None))
             | (models.Material.owner_id == user.id),
@@ -728,6 +759,7 @@ def create_test(
             title += f" +{len(materials) - 2} more"
 
     test = models.Test(
+        school_id=subject.school_id,
         subject_id=subject.id,
         owner_id=user.id,
         title=title,
@@ -881,9 +913,112 @@ def _classroom_out(db, classroom: models.Classroom, user: models.User):
 
 def _taught_classroom(db, classroom_id: int, user: models.User) -> models.Classroom:
     classroom = db.get(models.Classroom, classroom_id)
+    if classroom is not None and classroom.school_id != user.school_id:
+        raise HTTPException(404, "Class not found")
     if classroom is None or (classroom.teacher_id != user.id and not user.is_admin):
         raise HTTPException(404, "Class not found")
     return classroom
+
+
+@app.get("/api/school", response_model=schemas.SchoolOut | None)
+def get_school(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """The caller's school, or null if they are not in one yet."""
+    if user.school_id is None:
+        return None
+    school = db.get(models.School, user.school_id)
+    out = schemas.SchoolOut.model_validate(school)
+    out.member_count = (
+        db.query(models.User).filter_by(school_id=school.id).count()
+    )
+    return out
+
+
+@app.post("/api/school", response_model=schemas.SchoolOut)
+def create_school(
+    payload: schemas.SchoolCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    """Creates a tenant and makes the caller its first administrator.
+
+    Only for an account that is not in one: an account belongs to exactly
+    one school, and moving it would strand everything it has made.
+    """
+    if user.school_id is not None:
+        raise HTTPException(409, "You are already in a school")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "School name is required")
+
+    base = slugify(name)
+    slug, suffix = base, 2
+    while db.query(models.School).filter_by(slug=slug).first() is not None:
+        slug, suffix = f"{base}-{suffix}", suffix + 1
+
+    school = models.School(name=name, slug=slug)
+    db.add(school)
+    db.commit()
+    db.refresh(school)
+
+    user.school_id = school.id
+    user.is_admin = True
+    user.is_teacher = True
+    db.commit()
+
+    out = schemas.SchoolOut.model_validate(school)
+    out.member_count = 1
+    return out
+
+
+@app.post("/api/school/invites", response_model=schemas.SchoolInviteOut)
+def invite_to_school(
+    payload: schemas.SchoolInviteCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require_admin),
+):
+    email = payload.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "A valid email address is required")
+
+    existing = db.query(models.User).filter_by(email=email).first()
+    if existing is not None and existing.school_id is not None:
+        raise HTTPException(400, "That account already belongs to a school")
+
+    pending = (
+        db.query(models.SchoolInvite)
+        .filter_by(school_id=user.school_id, email=email, claimed_at=None)
+        .first()
+    )
+    if pending is not None:
+        raise HTTPException(400, "That address has already been invited")
+
+    invite = models.SchoolInvite(
+        school_id=user.school_id,
+        email=email,
+        is_teacher=payload.is_teacher,
+        is_admin=payload.is_admin,
+    )
+    db.add(invite)
+    db.commit()
+    db.refresh(invite)
+    return invite
+
+
+@app.get("/api/school/invites", response_model=list[schemas.SchoolInviteOut])
+def list_school_invites(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require_admin),
+):
+    return (
+        db.query(models.SchoolInvite)
+        .filter_by(school_id=user.school_id, claimed_at=None)
+        .order_by(models.SchoolInvite.created_at.desc())
+        .all()
+    )
 
 
 @app.get("/api/classes", response_model=list[schemas.ClassroomOut])
@@ -913,7 +1048,9 @@ def create_class(
     name = payload.name.strip()
     if not name:
         raise HTTPException(400, "Class name is required")
-    classroom = models.Classroom(name=name, teacher_id=user.id)
+    classroom = models.Classroom(
+        school_id=user.school_id, name=name, teacher_id=user.id
+    )
     db.add(classroom)
     db.commit()
     db.refresh(classroom)
@@ -1087,7 +1224,12 @@ def list_users(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.require_admin),
 ):
-    return db.query(models.User).order_by(models.User.created_at.desc()).all()
+    return (
+        db.query(models.User)
+        .filter(models.User.school_id == user.school_id)
+        .order_by(models.User.created_at.desc())
+        .all()
+    )
 
 
 @app.put("/api/admin/users/{user_id}", response_model=schemas.AdminUserOut)
@@ -1104,6 +1246,8 @@ def set_user_role(
     configuration rather than being editable from inside the app.
     """
     target = db.get(models.User, user_id)
+    if target is not None and target.school_id != admin.school_id:
+        raise HTTPException(404, "User not found")
     if target is None:
         raise HTTPException(404, "User not found")
     target.is_teacher = payload.is_teacher
@@ -1133,8 +1277,15 @@ def client_config():
 
 
 @app.get("/api/me", response_model=schemas.MeOut)
-def get_me(user: models.User = Depends(auth.current_user)):
-    return user
+def get_me(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.current_user),
+):
+    out = schemas.MeOut.model_validate(user)
+    if user.school_id is not None:
+        school = db.get(models.School, user.school_id)
+        out.school_name = school.name if school else None
+    return out
 
 
 @app.put("/api/me/profile", response_model=schemas.LearnerProfileOut)
