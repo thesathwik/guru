@@ -987,6 +987,27 @@ def create_school(
     db.commit()
     db.refresh(school)
 
+    # A school with no year and no term looks set up but cannot produce a
+    # report card, and the error it gives ("Term not found") explains
+    # nothing. Provision the academic spine with it; a school that runs
+    # three terms renames this one and adds the others.
+    now = datetime.utcnow()
+    start = now.year if now.month >= 4 else now.year - 1
+    year = models.AcademicYear(
+        school_id=school.id, name=f"{start}-{str(start + 1)[-2:]}", is_current=True
+    )
+    db.add(year)
+    db.commit()
+    db.refresh(year)
+    db.add(
+        models.Term(
+            school_id=school.id,
+            academic_year_id=year.id,
+            name="Term 1",
+            is_current=True,
+        )
+    )
+
     user.school_id = school.id
     user.is_admin = True
     user.is_teacher = True
